@@ -38,7 +38,10 @@ export function createClient({ metinaUrl, email, password, evmKey, address, rpcs
   async function readJson(res) {
     const next = parseSetCookie(res);
     if (next) cookie = mergeCookie(cookie, next);
-    const json = await res.json().catch(() => ({}));
+    let json = await res.json().catch(() => ({}));
+    if (evmKey && JSON.stringify(json).includes(evmKey)) {
+      json = JSON.parse(JSON.stringify(json).split(evmKey).join("[redacted]"));
+    }
     if (!res.ok || json.ok === false) {
       const err = new Error(json.error || json.message || `HTTP ${res.status}`);
       err.status = res.status;

@@ -29,6 +29,9 @@ function parseThreadId(raw) {
 
 export function loadConfig() {
   const metinaUrl = envStr("METINA_URL", "https://pro.metina.id").replace(/\/+$/, "");
+  if (!/^https:\/\//i.test(metinaUrl)) {
+    throw new Error("METINA_URL must use https:// — your private key is sent in the close request body");
+  }
   const email = envStr("METINA_EMAIL");
   const password = envStr("METINA_PASSWORD");
   const evmKey = normalizePk(envStr("EVM_PRIVATE_KEY"));
