@@ -112,13 +112,13 @@ describe("loadConfig", () => {
     const cfg = withEnv({
       ...valid,
       TELEGRAM_BOT_TOKEN: "123456:ABC-DEF",
-      TELEGRAM_CHAT_ID: "-1001234567890",
+      TELEGRAM_CHAT_ID: "123456789",
       TELEGRAM_MESSAGE_THREAD_ID: "42",
       TELEGRAM_ENABLED: "1",
     }, () => loadConfig());
     assert.deepEqual(cfg.telegram, {
       token: "123456:ABC-DEF",
-      chatId: "-1001234567890",
+      chatId: "123456789",
       threadId: 42,
       enabled: true,
     });
@@ -128,7 +128,7 @@ describe("loadConfig", () => {
     const cfg = withEnv({
       ...valid,
       TELEGRAM_BOT_TOKEN: "123456:ABC-DEF",
-      TELEGRAM_CHAT_ID: "-1001234567890",
+      TELEGRAM_CHAT_ID: "123456789",
       TELEGRAM_ENABLED: "0",
     }, () => loadConfig());
     assert.equal(cfg.telegram.enabled, false);
@@ -143,9 +143,19 @@ describe("loadConfig", () => {
 
     const cfgOnlyChatId = withEnv({
       ...valid,
-      TELEGRAM_CHAT_ID: "-1001234567890",
+      TELEGRAM_CHAT_ID: "123456789",
     }, () => loadConfig());
     assert.equal(cfgOnlyChatId.telegram, null);
+  });
+
+  test("rejects a group/channel chat_id (negative) — private chat only", () => {
+    withEnv({
+      ...valid,
+      TELEGRAM_BOT_TOKEN: "123456:ABC-DEF",
+      TELEGRAM_CHAT_ID: "-1001234567890",
+    }, () => {
+      assert.throws(() => loadConfig(), /private 1:1 chat/);
+    });
   });
 });
 

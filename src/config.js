@@ -60,6 +60,13 @@ export function loadConfig() {
   const tgThreadId = parseThreadId(envStr("TELEGRAM_MESSAGE_THREAD_ID"));
   const tgEnabled = envOn("TELEGRAM_ENABLED", true);
 
+  if (tgChatId && Number(tgChatId) < 0) {
+    throw new Error(
+      "TELEGRAM_CHAT_ID looks like a group/channel (negative ID). This bot only supports a private 1:1 chat — " +
+      "message the bot directly and use the positive chat_id from getUpdates."
+    );
+  }
+
   const telegram = tgToken && tgChatId
     ? {
       token: tgToken,
