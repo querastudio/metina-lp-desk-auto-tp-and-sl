@@ -157,5 +157,15 @@ describe("loadConfig", () => {
       assert.throws(() => loadConfig(), /private 1:1 chat/);
     });
   });
+
+  test("rejects a channel @username chat_id — private chat only", () => {
+    withEnv({
+      ...valid,
+      TELEGRAM_BOT_TOKEN: "123456:ABC-DEF",
+      TELEGRAM_CHAT_ID: "@some_public_channel",
+    }, () => {
+      assert.throws(() => loadConfig(), /private 1:1 chat/);
+    });
+  });
 });
 

@@ -113,6 +113,25 @@ describe("Metina client", () => {
     });
   });
 
+  test("redacts the private key from a response even if the API echoes it back in a different case", async () => {
+    const client = createClient(creds);
+    const upperKey = creds.evmKey.toUpperCase();
+    await withFetch(() => jsonRes({
+      status: 400,
+      body: { ok: false, error: `invalid signer ${upperKey}` },
+    }), async () => {
+      await assert.rejects(
+        () => client.positions(),
+        (err) => {
+          assert.equal(err.message.includes(upperKey), false);
+          assert.equal(err.message.includes(creds.evmKey), false);
+          assert.match(err.message, /\[redacted\]/);
+          return true;
+        },
+      );
+    });
+  });
+
   test("non-401 errors do not retry login", async () => {
     const client = createClient(creds);
     await withFetch(() => jsonRes({ status: 500, body: { ok: false, error: "boom" } }), async (calls) => {

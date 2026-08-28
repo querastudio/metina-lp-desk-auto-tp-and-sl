@@ -60,10 +60,10 @@ export function loadConfig() {
   const tgThreadId = parseThreadId(envStr("TELEGRAM_MESSAGE_THREAD_ID"));
   const tgEnabled = envOn("TELEGRAM_ENABLED", true);
 
-  if (tgChatId && Number(tgChatId) < 0) {
+  if (tgChatId && !/^[1-9][0-9]*$/.test(tgChatId)) {
     throw new Error(
-      "TELEGRAM_CHAT_ID looks like a group/channel (negative ID). This bot only supports a private 1:1 chat — " +
-      "message the bot directly and use the positive chat_id from getUpdates."
+      "TELEGRAM_CHAT_ID must be a plain positive number (a private 1:1 chat). Group/channel IDs are negative " +
+      "and @usernames are not supported — message the bot directly and use the positive chat_id from getUpdates."
     );
   }
 
