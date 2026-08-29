@@ -187,6 +187,12 @@ describe("position-notify formatting", () => {
     assert.match(block, /Collected fees:\s+\$2\.37/);
   });
 
+  test("formatPnlBlock flags Live PNL when Pro marks it unreliable", () => {
+    const pos = { pnl: { pnl_pct: 4.71, onchain_pnl_pct: -0.5, pnl_reliable: false } };
+    const block = formatPnlBlock(pos);
+    assert.match(block, /Live:\s+\+4\.71%.*Pro flags unreliable/);
+  });
+
   test("formatAssetsBlock formats token assets breakdown", () => {
     assert.equal(formatCompactNumber(1870), "1.87k");
     assert.equal(formatCompactNumber(2500000), "2.5M");

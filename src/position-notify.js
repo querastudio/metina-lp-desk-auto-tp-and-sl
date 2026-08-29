@@ -112,13 +112,15 @@ export function formatPnlBlock(position, labelPrefix = "") {
   const valueUsd = num(pnl.current_value_usd ?? position.total_value_usd ?? position.current_value_usd);
   const unclaimedUsd = num(pnl.unclaimed_fee_usd ?? position.unclaimed_fees_usd);
   const claimedUsd = num(pnl.fees_claimed_usd ?? pnl.fees_claimed_usdg ?? position.fees_claimed_usd);
+  const reliable = pnl.pnl_reliable ?? position.pnl_reliable;
 
   const lines = [];
   const header = labelPrefix ? `PNL (${labelPrefix}):` : "PNL:";
 
   if (livePct != null) {
     const usdPart = liveUsd != null ? `  (${formatUsd(liveUsd, true)})` : "";
-    lines.push(`  Live:    ${formatPct(livePct, true)}${usdPart}`);
+    const warn = reliable === false ? "  ⚠️ Pro flags unreliable" : "";
+    lines.push(`  Live:    ${formatPct(livePct, true)}${usdPart}${warn}`);
   }
   if (onchainPct != null) {
     lines.push(`  On-chain: ${formatPct(onchainPct, true)}`);

@@ -81,6 +81,13 @@ export function evaluateExit(position) {
   return { action: null, reason: null, kind: null };
 }
 
+/** Does NOT affect close decisions — diagnostic only, so a false-trigger like a display % with no real cost basis can be traced from the logs afterward. */
+function reliabilityLabel(position) {
+  const pnl = position?.pnl && typeof position.pnl === "object" ? position.pnl : {};
+  const reliable = pnl.pnl_reliable ?? position?.pnl_reliable;
+  return reliable === false ? " reliable=false" : "";
+}
+
 export function watchLine(position) {
   const pnl = position?.pnl && typeof position.pnl === "object" ? position.pnl : {};
   const hit = evaluateExit(position);
@@ -93,7 +100,7 @@ export function watchLine(position) {
   const tpLabel = tp != null ? ` tp=${tp}` : "";
   const slLabel = sl != null ? ` sl=${sl}` : "";
   const state = hit.kind || (live == null && onchain == null ? "no-pnl" : "watch");
-  return `${position?.pair || position?.position}${slLabel}${tpLabel} live=${liveLabel} onchain=${onchainLabel} ${state}`;
+  return `${position?.pair || position?.position}${slLabel}${tpLabel} live=${liveLabel} onchain=${onchainLabel}${reliabilityLabel(position)} ${state}`;
 }
 
 export function closePayload(p, extra = {}) {

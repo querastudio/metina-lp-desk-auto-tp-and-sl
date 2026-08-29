@@ -109,6 +109,16 @@ describe("TP/SL rules (same as Metina Pro desk)", () => {
     assert.match(line, /take_profit/);
   });
 
+  test("watchLine flags pnl_reliable=false for diagnostics, without changing the close decision", () => {
+    const line = watchLine({
+      pair: "AGI/USDG",
+      take_profit_pct: 3,
+      pnl: { pnl_pct: 4.71, onchain_pnl_pct: -0.5, pnl_reliable: false },
+    });
+    assert.match(line, /reliable=false/);
+    assert.match(line, /take_profit/);
+  });
+
   test("positionKey is stable", () => {
     assert.equal(
       positionKey({ poolType: "uniswap", chain: "bsc", position: "99" }),
