@@ -30,6 +30,41 @@ describe("TP/SL rules (same as Metina Pro desk)", () => {
     assert.equal(below.action, null);
   });
 
+  test("unreliable row prefers the $-derived % over Pro's own (wrong) display/onchain %", () => {
+    // Real case: Telegram showed Live -7.74% (matching pnl_pct/onchain_pnl_pct
+    // from the API) while the Metina web desk showed UPNL -1.43% for the same
+    // position — both computed from the same $92.26 value / -$1.26 PnL.
+    const notClose = evaluateExit({
+      poolType: "uniswap",
+      pnl: {
+        pnl_pct: -7.74,
+        onchain_pnl_pct: -7.74,
+        pnl_usd: -1.26,
+        current_value_usd: 92.26,
+        pnl_reliable: false,
+      },
+      stop_loss_pct: -5,
+      take_profit_pct: 5,
+    });
+    // -1.26 / (92.26 - -1.26) * 100 ≈ -1.35%, well above the -5% SL —
+    // must NOT close even though the raw display/onchain % (-7.74%) would.
+    assert.equal(notClose.action, null);
+
+    const doesClose = evaluateExit({
+      poolType: "uniswap",
+      pnl: {
+        pnl_pct: -7.74,
+        onchain_pnl_pct: -7.74,
+        pnl_usd: -1.26,
+        current_value_usd: 92.26,
+        pnl_reliable: false,
+      },
+      stop_loss_pct: -1,
+      take_profit_pct: 5,
+    });
+    assert.equal(doesClose.kind, "stop_loss");
+  });
+
   test("uses Live PNL %, not on-chain inventory mark", () => {
     const liveHit = evaluateExit({
       poolType: "uniswap",

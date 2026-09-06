@@ -38,11 +38,30 @@ export function livePnlPct(position) {
     return liveUsd == null || Math.abs(liveUsd) < 0.01;
   };
 
-  if (display != null && Math.abs(display) >= 0.005 && !mixed(display)) return display;
-  if (liveUsd != null && Math.abs(liveUsd) >= 0.01 && current != null) {
-    const cost = current - liveUsd;
-    if (cost > 0) return (liveUsd / cost) * 100;
+  const costBasisPct = () => {
+    if (liveUsd != null && Math.abs(liveUsd) >= 0.01 && current != null) {
+      const cost = current - liveUsd;
+      if (cost > 0) return (liveUsd / cost) * 100;
+    }
+    return null;
+  };
+
+  const reliable = pnl.pnl_reliable ?? position?.pnl_reliable;
+  if (reliable === false) {
+    // Pro's own display/onchain % is computed differently for rows it
+    // flags unreliable, and can disagree sharply with reality (seen live:
+    // API said -7.74%, the desk's own $-based math said -1.43%). The
+    // dollar-derived % matches the desk, so prefer it here.
+    const cb = costBasisPct();
+    if (cb != null) return cb;
+    if (display != null && !mixed(display)) return display;
+    if (onchain != null && !mixed(onchain)) return onchain;
+    return null;
   }
+
+  if (display != null && Math.abs(display) >= 0.005 && !mixed(display)) return display;
+  const cb = costBasisPct();
+  if (cb != null) return cb;
   if (display != null && !mixed(display)) return display;
   if (onchain != null && !mixed(onchain)) return onchain;
   return null;
