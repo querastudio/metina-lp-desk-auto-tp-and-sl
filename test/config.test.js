@@ -14,6 +14,10 @@ const ENV_KEYS = [
   "POLL_MS",
   "DISCOVER_EVERY",
   "LIVE_CLOSE",
+  "LIVE_OPEN",
+  "TELEGRAM_CMD_INTERVAL_MS",
+  "TELEGRAM_OPEN_COOLDOWN_MS",
+  "TELEGRAM_CLOSE_COOLDOWN_MS",
   "TELEGRAM_BOT_TOKEN",
   "TELEGRAM_CHAT_ID",
   "TELEGRAM_MESSAGE_THREAD_ID",
@@ -87,7 +91,11 @@ describe("loadConfig", () => {
     const cfg = withEnv(valid, () => loadConfig());
     assert.equal(cfg.metinaUrl, "https://pro.metina.id");
     assert.equal(cfg.liveClose, false);
+    assert.equal(cfg.liveOpen, false);
     assert.equal(cfg.pollMs, 45_000);
+    assert.equal(cfg.telegramCmdIntervalMs, 2_000);
+    assert.equal(cfg.telegramOpenCooldownMs, 45_000);
+    assert.equal(cfg.telegramCloseCooldownMs, 10_000);
     assert.equal(cfg.discoverEvery, 8);
     assert.equal(cfg.telegram, null);
   });
@@ -99,12 +107,14 @@ describe("loadConfig", () => {
       RPC_BSC: "https://bsc.example",
       RPC_BASE: "https://base.example",
       LIVE_CLOSE: "1",
+      LIVE_OPEN: "1",
       POLL_MS: "10000",
     }, () => loadConfig());
     assert.equal(cfg.metinaUrl, "https://pro.metina.id");
     assert.equal(cfg.rpcs.bsc, "https://bsc.example");
     assert.equal(cfg.rpcs.base, "https://base.example");
     assert.equal(cfg.liveClose, true);
+    assert.equal(cfg.liveOpen, true);
     assert.equal(cfg.pollMs, 15_000);
   });
 
