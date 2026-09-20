@@ -33,9 +33,106 @@ export const CLAIM_TP_COOLDOWN_MS = 180_000;
 
 function feeBuckets(position) {
   const pnl = position?.pnl && typeof position.pnl === "object" ? position.pnl : {};
-  const unclaimed = num(pnl.unclaimed_fee_usd ?? position?.unclaimed_fees_usd) || 0;
-  const claimed = num(pnl.fees_claimed_usd ?? pnl.fees_claimed_usdg ?? position?.fees_claimed_usd) || 0;
+  const unclaimed = firstPositive(
+    pnl.unclaimed_fee_usd,
+    position?.unclaimed_fees_usd,
+    pnl.unclaimed_fees_quote,
+    position?.unclaimed_fees_quote,
+  ) || 0;
+  const claimed = firstPositive(
+    pnl.fees_claimed_usd,
+    pnl.fees_claimed_usdg,
+    position?.fees_claimed_usd,
+    pnl.collected_fees_usd,
+    position?.collected_fees_usd,
+  ) || 0;
   return { pnl, unclaimed, claimed, fees: openFeesUsd(unclaimed, claimed) };
+}
+
+function firstPositive(...vals) {
+  for (const v of vals) {
+    const n = num(v);
+    if (n != null && n > 0) return n;
+  }
+  return null;
+}
+
+function lpSidesUsd(position) {
+  const pnl = position?.pnl && typeof position.pnl === "object" ? position.pnl : {};
+  const meme = num(pnl.amount_meme_usd ?? position?.amount_meme_usd);
+  const quote = num(
+    pnl.amount_eth_usd
+    ?? pnl.amount_sol_usd
+    ?? pnl.amount_quote_usd
+    ?? position?.amount_eth_usd
+    ?? position?.amount_sol_usd
+    ?? position?.amount_quote_usd,
+  );
+  const sides = (meme > 0 ? meme : 0) + (quote > 0 ? quote : 0);
+  return sides >= 0.01 ? sides : null;
+}
+
+function lpInventoryUsd(position) {
+  const pnl = position?.pnl && typeof position.pnl === "object" ? position.pnl : {};
+  // $0 Bid-Ask / LPAgent marks still have token sides — do not treat as −100% SL.
+  const current = firstPositive(pnl.current_value_usd, position?.total_value_usd, position?.current_value_usd);
+  const sides = lpSidesUsd(position);
+  const unclaimed = firstPositive(
+    pnl.unclaimed_fee_usd,
+    position?.unclaimed_fees_usd,
+    pnl.unclaimed_fees_quote,
+    position?.unclaimed_fees_quote,
+  ) || 0;
+  // Prefer token sides when current already folded in unclaimed (would double-count).
+  if (sides != null && current != null && unclaimed >= 0.01
+    && current > sides + Math.max(1, unclaimed * 0.5)
+    && Math.abs(current - (sides + unclaimed)) <= Math.max(1, unclaimed * 0.25)) {
+    return sides;
+  }
+  if (current != null) return current;
+  return sides;
+}
+
+function entryCostUsd(position, inventory) {
+  const pnl = position?.pnl && typeof position.pnl === "object" ? position.pnl : {};
+  const entry = firstPositive(
+    pnl.entry_value_usd,
+    position?.initial_value_usd,
+    position?.entry_value_usd,
+    position?.input_value,
+    pnl.entry_value_eth,
+  );
+  if (entry != null) return entry;
+  const onchain = num(pnl.onchain_pnl_pct ?? position?.onchain_pnl_pct);
+  if (inventory != null && inventory > 0 && onchain != null && Math.abs(onchain) <= 500 && onchain > -99.9) {
+    const cost = inventory / (1 + onchain / 100);
+    if (cost > 0) return cost;
+  }
+  return null;
+}
+
+function mixedUnitPct(pct, liveUsd) {
+  if (pct == null || !Number.isFinite(pct) || Math.abs(pct) <= 500) return false;
+  return liveUsd == null || Math.abs(liveUsd) < 0.01;
+}
+
+/**
+ * Live USD = LP inventory (meme + USDG/ETH/…) + claimed/unclaimed fees − cost.
+ * Do not trust API pnl_pct when it is just the on-chain inventory mark.
+ */
+export function livePnlUsd(position) {
+  const { pnl, fees } = feeBuckets(position);
+  const printed = num(pnl.pnl_usd ?? position?.pnl_usd);
+  const inventory = lpInventoryUsd(position);
+  const cost = entryCostUsd(position, inventory);
+
+  if (inventory != null && cost != null && cost > 0) {
+    return inventory + fees - cost;
+  }
+  if ((printed == null || Math.abs(printed) < 0.005) && fees >= 0.01) {
+    return (printed || 0) + fees;
+  }
+  return printed;
 }
 
 export function skipTakeProfitAfterClaim(position) {
@@ -58,57 +155,87 @@ export function skipTakeProfitAfterClaim(position) {
 export function positionKey(p) {
   const venue = String(p?.poolType || p?.venue || "uniswap").toLowerCase();
   const chain = String(p?.chain || "").toLowerCase();
+  const ids = Array.isArray(p?.ladder_token_ids)
+    ? [...new Set(p.ladder_token_ids.map((id) => String(id || "").trim()).filter(Boolean))]
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+    : [];
+  if (ids.length > 1) {
+    return `${venue}-${chain}-lad:${ids.join(",")}`;
+  }
   return `${venue}-${chain}-${p?.position || p?.tokenId || ""}`;
 }
 
-/** Same % the Open card prints as Live PNL. */
+/** Same % the Open card prints as Live PNL (inventory + fees vs cost). */
 export function livePnlPct(position) {
   const pnl = position?.pnl && typeof position.pnl === "object" ? position.pnl : {};
   const display = num(pnl.pnl_pct ?? position?.pnl_pct);
   const onchain = num(pnl.onchain_pnl_pct ?? position?.onchain_pnl_pct);
-  const usd = num(pnl.pnl_usd ?? position?.pnl_usd);
-  const { fees } = feeBuckets(position);
-  const current = num(pnl.current_value_usd ?? position?.total_value_usd ?? position?.current_value_usd);
-
-  let liveUsd = usd;
-  if ((liveUsd == null || Math.abs(liveUsd) < 0.005) && fees >= 0.01) {
-    liveUsd = (liveUsd || 0) + fees;
-  }
-
-  // A huge % (native-quote unit-mix, e.g. WETH/WBNB/SOL cards) with no real
-  // USD PnL behind it is a garbage reading, not a real 500%+ move — ignore it.
-  const mixed = (pct) => {
-    if (pct == null || !Number.isFinite(pct) || Math.abs(pct) <= 500) return false;
-    return liveUsd == null || Math.abs(liveUsd) < 0.01;
-  };
-
-  const costBasisPct = () => {
-    if (liveUsd != null && Math.abs(liveUsd) >= 0.01 && current != null) {
-      const cost = current - liveUsd;
-      if (cost > 0) return (liveUsd / cost) * 100;
-    }
-    return null;
-  };
+  const inventory = lpInventoryUsd(position);
+  const cost = entryCostUsd(position, inventory);
+  const liveUsd = livePnlUsd(position);
 
   const reliable = pnl.pnl_reliable ?? position?.pnl_reliable;
   if (reliable === false) {
-    // Pro's own display/onchain % is computed differently for rows it
-    // flags unreliable, and can disagree sharply with reality (seen live:
-    // API said -7.74%, the desk's own $-based math said -1.43%). The
-    // dollar-derived % matches the desk, so prefer it here.
-    const cb = costBasisPct();
-    if (cb != null) return cb;
-    if (display != null && !mixed(display)) return display;
-    if (onchain != null && !mixed(onchain)) return onchain;
+    // Pro's own display/onchain % — and any cost inferred purely from that
+    // same % — can disagree sharply with reality for rows with no real
+    // deposit cost basis (seen live: API said -7.74%, the desk's own
+    // $-based math said -1.43%). Prefer the printed $ PnL vs inventory
+    // instead of trusting entryCostUsd's onchain-% fallback, which would
+    // just reproduce the same wrong number here.
+    const printedUsd = num(pnl.pnl_usd ?? position?.pnl_usd);
+    if (printedUsd != null && Math.abs(printedUsd) >= 0.01 && inventory != null) {
+      const inferred = inventory - printedUsd;
+      if (inferred > 0) {
+        const cb = (printedUsd / inferred) * 100;
+        if (Number.isFinite(cb) && !mixedUnitPct(cb, printedUsd)) return cb;
+      }
+    }
+    if (display != null && !mixedUnitPct(display, liveUsd)) return display;
+    if (onchain != null && !mixedUnitPct(onchain, liveUsd)) return onchain;
     return null;
   }
 
-  if (display != null && Math.abs(display) >= 0.005 && !mixed(display)) return display;
-  const cb = costBasisPct();
-  if (cb != null) return cb;
-  if (display != null && !mixed(display)) return display;
-  if (onchain != null && !mixed(onchain)) return onchain;
+  if (liveUsd != null && cost != null && cost > 0) {
+    const fromMark = (liveUsd / cost) * 100;
+    if (Number.isFinite(fromMark) && !mixedUnitPct(fromMark, liveUsd)) return fromMark;
+  }
+
+  if (display != null && Math.abs(display) >= 0.005 && !mixedUnitPct(display, liveUsd)) return display;
+  if (liveUsd != null && Math.abs(liveUsd) >= 0.01 && inventory != null) {
+    const inferred = inventory - liveUsd;
+    if (inferred > 0) return (liveUsd / inferred) * 100;
+  }
+  if (display != null && !mixedUnitPct(display, liveUsd)) return display;
+  if (onchain != null && !mixedUnitPct(onchain, liveUsd)) return onchain;
   return null;
+}
+
+function isBidAskPosition(p) {
+  const s = String(p?.strategy || p?.pnl?.strategy || "").toLowerCase().replace(/-/g, "_");
+  if (s === "bid_ask" || s === "bidask") return true;
+  const ids = p?.ladder_token_ids;
+  return Array.isArray(ids) && ids.length > 1;
+}
+
+function bidAskRungCount(p) {
+  const n = Number(p?.ladder_rungs);
+  if (Number.isFinite(n) && n > 1) return n;
+  const ids = p?.ladder_token_ids;
+  return Array.isArray(ids) && ids.length > 1 ? ids.length : 1;
+}
+
+/**
+ * Bid-Ask Auto TP/SL only on collapsed Live % with a full ladder mark.
+ * Skip $0-without-sides, one indexed rung vs full cost, and wild indexer %.
+ */
+function bidAskExitReady(position, pnlPct) {
+  if (!isBidAskPosition(position)) return true;
+  const inventory = lpInventoryUsd(position);
+  const cost = entryCostUsd(position, inventory);
+  if (!(cost >= 1) || !(inventory >= 1)) return false;
+  if (pnlPct != null && Number.isFinite(pnlPct) && Math.abs(pnlPct) > 200) return false;
+  if (bidAskRungCount(position) >= 2 && inventory < cost * 0.4) return false;
+  return true;
 }
 
 export function evaluateExit(position) {
@@ -134,6 +261,9 @@ export function evaluateExit(position) {
     pnlPct = num(pnl.pnl_pct ?? position.pnl_pct ?? pnl.pnl_sol_pct);
   }
   if (pnlPct == null) return { action: null, reason: null, kind: null };
+  if (!bidAskExitReady(position, pnlPct)) {
+    return { action: null, reason: null, kind: null };
+  }
 
   if (Number.isFinite(sl) && pnlPct <= sl) {
     return {
@@ -178,6 +308,9 @@ export function watchLine(position) {
 }
 
 export function closePayload(p, extra = {}) {
+  const ids = Array.isArray(p.ladder_token_ids)
+    ? p.ladder_token_ids.map((id) => String(id)).filter(Boolean)
+    : [];
   return {
     venue: String(p.poolType || p.venue || "uniswap").toLowerCase() === "dlmm" ? "dlmm" : "uniswap",
     position: p.position || p.tokenId,
@@ -189,6 +322,9 @@ export function closePayload(p, extra = {}) {
     fee: p.fee,
     version: p.version,
     dex: p.dex,
+    strategy: p.strategy || p.pnl?.strategy || null,
+    ladder_id: p.ladder_id || null,
+    ladder_token_ids: ids.length > 1 ? ids : undefined,
     snapshot: p,
     ...extra,
   };

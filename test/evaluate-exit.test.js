@@ -1,6 +1,6 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { closePayload, evaluateExit, positionKey, watchLine } from "../src/evaluate-exit.js";
+import { closePayload, evaluateExit, livePnlPct, livePnlUsd, positionKey, watchLine } from "../src/evaluate-exit.js";
 
 describe("TP/SL rules (same as Metina Pro desk)", () => {
   test("hits stop loss when on-chain PnL is reliable", () => {
@@ -90,6 +90,46 @@ describe("TP/SL rules (same as Metina Pro desk)", () => {
     assert.equal(liveBelow.action, null);
   });
 
+  test("BLAST-style: SL uses LP value + fees, not on-chain inventory %", () => {
+    const blastOpen = {
+      poolType: "uniswap",
+      pair: "BLAST/USDG",
+      stop_loss_pct: -10,
+      pnl: {
+        pnl_pct: 5.29,
+        pnl_usd: 4.73,
+        onchain_pnl_pct: -10.61,
+        current_value_usd: 89.39,
+        unclaimed_fee_usd: 15.33,
+        fees_claimed_usd: 0,
+        amount_meme_usd: 34.97,
+        amount_eth_usd: 54.43,
+      },
+    };
+    assert.equal(evaluateExit(blastOpen).action, null);
+    assert.ok(livePnlPct(blastOpen) > 0);
+    assert.ok(livePnlUsd(blastOpen) > 4);
+
+    const blastCloseSnapshot = {
+      poolType: "uniswap",
+      pair: "BLAST/USDG",
+      stop_loss_pct: -10,
+      pnl: {
+        // API copied on-chain % into Live — that used to false-trigger SL -10%.
+        pnl_pct: -16.86,
+        pnl_usd: -2.28,
+        onchain_pnl_pct: -16.86,
+        current_value_usd: 83.14,
+        unclaimed_fee_usd: 14.76,
+        fees_claimed_usd: 0,
+      },
+    };
+    const hit = evaluateExit(blastCloseSnapshot);
+    assert.equal(hit.action, null, `live ${livePnlPct(blastCloseSnapshot)}% should not hit SL -10%`);
+    assert.ok(livePnlPct(blastCloseSnapshot) > -10);
+    assert.ok(Math.abs(livePnlUsd(blastCloseSnapshot) + 2.1) < 0.5);
+  });
+
   test("falls back to on-chain % when Live PNL is missing", () => {
     const hit = evaluateExit({
       poolType: "uniswap",
@@ -177,6 +217,26 @@ describe("TP/SL rules (same as Metina Pro desk)", () => {
       positionKey({ poolType: "uniswap", chain: "bsc", position: "99" }),
       "uniswap-bsc-99",
     );
+    assert.equal(
+      positionKey({
+        poolType: "uniswap",
+        chain: "robinhood",
+        position: "10",
+        ladder_id: "lad:x",
+        ladder_token_ids: ["10", "11", "12"],
+      }),
+      "uniswap-robinhood-lad:10,11,12",
+    );
+    assert.equal(
+      positionKey({
+        poolType: "uniswap",
+        chain: "robinhood",
+        position: "10",
+        ladder_id: "lad:inf:robinhood:10",
+        ladder_token_ids: ["12", "10", "11"],
+      }),
+      "uniswap-robinhood-lad:10,11,12",
+    );
   });
 
   test("closePayload maps the desk close body", () => {
@@ -231,5 +291,32 @@ describe("TP/SL rules (same as Metina Pro desk)", () => {
       },
     });
     assert.equal(justClaimed.action, null);
+  });
+
+  test("Bid-Ask $0 current with token sides is not −100% SL", () => {
+    const hit = evaluateExit({
+      poolType: "uniswap",
+      strategy: "bid_ask",
+      stop_loss_pct: -50,
+      take_profit_pct: 10,
+      total_value_usd: 0,
+      entry_value_usd: 100,
+      pnl: {
+        current_value_usd: 0,
+        entry_value_usd: 100,
+        amount_eth_usd: 60,
+        amount_meme_usd: 35,
+        pnl_usd: 0,
+        pnl_pct: 0,
+      },
+    });
+    assert.equal(hit.action, null);
+    const pct = livePnlPct({
+      poolType: "uniswap",
+      entry_value_usd: 100,
+      total_value_usd: 0,
+      pnl: { current_value_usd: 0, entry_value_usd: 100, amount_eth_usd: 60, amount_meme_usd: 35 },
+    });
+    assert.ok(pct != null && pct > -50, pct);
   });
 });
