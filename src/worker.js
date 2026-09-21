@@ -40,9 +40,22 @@ function openFetchOpts(arg) {
 async function getOpenPositions(client, arg = false) {
   const { discover, hydrate } = openFetchOpts(arg);
   const data = await client.positions({ discover, hydrate });
-  const list = Array.isArray(data?.positions) ? data.positions : [];
-  const live = list.filter((p) => !p.closed_on_chain && !p.readonly);
-  return collapseOpenLadders(live);
+  const rawList = Array.isArray(data?.positions) ? data.positions : [];
+  const live = rawList.filter((p) => !p.closed_on_chain && !p.readonly);
+  const collapsed = collapseOpenLadders(live);
+  // Full rescans are infrequent (/refresh, /open, /close, periodic rediscover)
+  // — always log the raw count here so an empty result can be told apart
+  // from "API genuinely returned zero" vs "our own filtering dropped rows".
+  if (discover) {
+    const closedCount = rawList.filter((p) => p.closed_on_chain).length;
+    const readonlyCount = rawList.filter((p) => p.readonly).length;
+    log(
+      `getOpenPositions(discover): api=${rawList.length} closed_on_chain=${closedCount} `
+      + `readonly=${readonlyCount} live=${live.length} collapsed=${collapsed.length} hydrate=${hydrate} `
+      + `data_keys=${Object.keys(data || {}).join(",") || "none"}`,
+    );
+  }
+  return collapsed;
 }
 
 function fullOpenFetch() {
