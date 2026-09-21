@@ -415,6 +415,60 @@ describe("PositionTracker cycle integration", () => {
     assert.match(sentMessages[0], /Manual \/ external/);
   });
 
+  test("a single empty poll (API glitch) does not trigger false external-close", async () => {
+    const sentMessages = [];
+    const notifier = {
+      isEnabled: () => true,
+      send: async (msg) => {
+        sentMessages.push(msg);
+        return { ok: true };
+      },
+    };
+
+    const tracker = createPositionTracker();
+    const pos1 = { poolType: "uniswap", chain: "robinhood", position: "1", pair: "POS1/USDG" };
+    const pos2 = { poolType: "uniswap", chain: "robinhood", position: "2", pair: "POS2/USDG" };
+
+    // Cycle 1: 2 positions open
+    await tracker.notifyCycle({ open: [pos1, pos2], discover: false, notifier });
+    assert.equal(sentMessages.length, 0);
+
+    // Cycle 2: API glitch — everything vanishes at once. Must NOT declare closed yet.
+    await tracker.notifyCycle({ open: [], discover: false, notifier });
+    assert.equal(sentMessages.length, 0);
+
+    // Cycle 3: positions are back — confirms it was a glitch, no close message ever sent.
+    await tracker.notifyCycle({ open: [pos1, pos2], discover: false, notifier });
+    assert.equal(sentMessages.length, 0);
+  });
+
+  test("all positions gone for 2 consecutive polls is confirmed as closed", async () => {
+    const sentMessages = [];
+    const notifier = {
+      isEnabled: () => true,
+      send: async (msg) => {
+        sentMessages.push(msg);
+        return { ok: true };
+      },
+    };
+
+    const tracker = createPositionTracker();
+    const pos1 = { poolType: "uniswap", chain: "robinhood", position: "1", pair: "POS1/USDG" };
+
+    await tracker.notifyCycle({ open: [pos1], discover: false, notifier });
+    assert.equal(sentMessages.length, 0);
+
+    // Cycle 2: vanished — not confirmed yet.
+    await tracker.notifyCycle({ open: [], discover: false, notifier });
+    assert.equal(sentMessages.length, 0);
+
+    // Cycle 3: still vanished — now confirmed as closed.
+    await tracker.notifyCycle({ open: [], discover: false, notifier });
+    assert.equal(sentMessages.length, 1);
+    assert.match(sentMessages[0], /Position Closed/);
+    assert.match(sentMessages[0], /POS1\/USDG/);
+  });
+
   test("does not send duplicate external close if worker marked it closed", async () => {
     const sentMessages = [];
     const notifier = {

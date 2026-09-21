@@ -395,8 +395,14 @@ export function formatCloseMessage({ position, reason, kind, tx, error, dry }) {
   return lines.join("\n");
 }
 
+/** A single poll where every tracked position vanishes at once smells like
+ *  an API hiccup (empty/degraded response), not everything closing in the
+ *  same instant — require it to repeat before trusting it. */
+const ALL_VANISHED_CONFIRM_STREAK = 2;
+
 export function createPositionTracker() {
   const previousOpenMap = new Map();
+  const missingStreak = new Map();
   const justClosedKeys = new Set();
   const dryNotifiedKeys = new Set();
 
@@ -429,16 +435,34 @@ export function createPositionTracker() {
       }
 
       // 2. Diff keys vs previous -> check if any closed externally
+      const allVanished = previousOpenMap.size > 0 && currentOpen.length === 0;
+      const stillPending = new Map();
       if (previousOpenMap.size > 0) {
         for (const [key, oldPos] of previousOpenMap.entries()) {
-          if (!currentKeys.has(key) && !justClosedKeys.has(key)) {
-            const msg = formatCloseMessage({
-              position: oldPos,
-              reason: "manual_or_external",
-              kind: "manual",
-            });
-            await notifier.send(msg);
+          if (currentKeys.has(key)) {
+            missingStreak.delete(key);
+            continue;
           }
+          if (justClosedKeys.has(key)) {
+            missingStreak.delete(key);
+            continue;
+          }
+          const streak = (missingStreak.get(key) || 0) + 1;
+          if (allVanished && streak < ALL_VANISHED_CONFIRM_STREAK) {
+            // Every position disappeared in the same poll — could be a
+            // fetch glitch. Wait one more cycle instead of declaring it
+            // closed, and keep watching it for SL/TP in the meantime.
+            missingStreak.set(key, streak);
+            stillPending.set(key, oldPos);
+            continue;
+          }
+          missingStreak.delete(key);
+          const msg = formatCloseMessage({
+            position: oldPos,
+            reason: "manual_or_external",
+            kind: "manual",
+          });
+          await notifier.send(msg);
         }
       }
 
@@ -446,6 +470,9 @@ export function createPositionTracker() {
       previousOpenMap.clear();
       for (const p of currentOpen) {
         previousOpenMap.set(positionKey(p), p);
+      }
+      for (const [key, oldPos] of stillPending) {
+        previousOpenMap.set(key, oldPos);
       }
       justClosedKeys.clear();
     },
