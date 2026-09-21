@@ -23,8 +23,21 @@ function mergeCookie(prev, next) {
   return [...map.entries()].map(([k, v]) => `${k}=${v}`).join("; ");
 }
 
+const DEFAULT_TIMEOUT_MS = 20_000;
+
 export function createClient({ metinaUrl, email, password, evmKey, address, rpcs }) {
   let cookie = "";
+
+  async function timedFetch(url, init = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
+    try {
+      return await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+    } catch (err) {
+      if (err?.name === "TimeoutError" || err?.name === "AbortError") {
+        throw new Error(`Metina API request timed out after ${Math.round(timeoutMs / 1000)}s`);
+      }
+      throw err;
+    }
+  }
 
   function headers({ sign = false } = {}) {
     const h = { Accept: "application/json" };
@@ -56,7 +69,7 @@ export function createClient({ metinaUrl, email, password, evmKey, address, rpcs
   }
 
   async function login() {
-    const res = await fetch(`${metinaUrl}/api/auth/login`, {
+    const res = await timedFetch(`${metinaUrl}/api/auth/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json" },
       body: JSON.stringify({ email, password }),
@@ -81,16 +94,17 @@ export function createClient({ metinaUrl, email, password, evmKey, address, rpcs
       const qs = new URLSearchParams();
       qs.set("discover", discover ? "1" : "0");
       qs.set("hydrate", hydrate ? "1" : "0");
-      const res = await fetch(`${metinaUrl}/api/web/positions?${qs}`, {
+      // discover+hydrate does a full on-chain rescan and can be slow — give it more room.
+      const res = await timedFetch(`${metinaUrl}/api/web/positions?${qs}`, {
         headers: headers(),
-      });
+      }, discover || hydrate ? 45_000 : DEFAULT_TIMEOUT_MS);
       return readJson(res);
     });
   }
 
   async function close(body) {
     return withAuth(async () => {
-      const res = await fetch(`${metinaUrl}/api/web/close`, {
+      const res = await timedFetch(`${metinaUrl}/api/web/close`, {
         method: "POST",
         headers: headers({ sign: true }),
         body: JSON.stringify({
@@ -104,7 +118,7 @@ export function createClient({ metinaUrl, email, password, evmKey, address, rpcs
 
   async function lookup(body) {
     return withAuth(async () => {
-      const res = await fetch(`${metinaUrl}/api/web/lookup`, {
+      const res = await timedFetch(`${metinaUrl}/api/web/lookup`, {
         method: "POST",
         headers: headers({ sign: true }),
         body: JSON.stringify(body),
@@ -115,7 +129,7 @@ export function createClient({ metinaUrl, email, password, evmKey, address, rpcs
 
   async function deploy(body) {
     return withAuth(async () => {
-      const res = await fetch(`${metinaUrl}/api/web/deploy`, {
+      const res = await timedFetch(`${metinaUrl}/api/web/deploy`, {
         method: "POST",
         headers: headers({ sign: true }),
         body: JSON.stringify({

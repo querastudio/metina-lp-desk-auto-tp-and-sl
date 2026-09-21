@@ -197,6 +197,27 @@ describe("Metina client", () => {
     });
   });
 
+  test("requests carry an abort signal so a hung API call cannot wait forever", async () => {
+    const client = createClient(creds);
+    await withFetch((_url, init) => {
+      assert.ok(init.signal instanceof AbortSignal, "expected an AbortSignal on the request");
+      return jsonRes({ body: { ok: true, positions: [] } });
+    }, async () => {
+      await client.positions();
+    });
+  });
+
+  test("a timed-out request surfaces a clear error instead of hanging silently", async () => {
+    const client = createClient(creds);
+    await withFetch(() => {
+      const err = new Error("The operation was aborted due to timeout");
+      err.name = "TimeoutError";
+      return Promise.reject(err);
+    }, async () => {
+      await assert.rejects(() => client.positions(), /timed out after \d+s/);
+    });
+  });
+
   test("non-401 errors do not retry login", async () => {
     const client = createClient(creds);
     await withFetch(() => jsonRes({ status: 500, body: { ok: false, error: "boom" } }), async (calls) => {

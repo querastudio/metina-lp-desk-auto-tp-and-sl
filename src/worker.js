@@ -455,6 +455,9 @@ export async function startWorker(cfg, client, options = {}) {
         });
       } catch (err) {
         log(`telegram command error: ${err.message}`);
+        await notifier?.send(
+          `⚠️ ${escapeHtml(parsed?.cmd || "Command")} gagal: ${escapeHtml(err.message || "unknown error")}`
+        );
       }
     });
     log(

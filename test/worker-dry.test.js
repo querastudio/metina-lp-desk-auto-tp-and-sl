@@ -1,6 +1,6 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { runCycle } from "../src/worker.js";
+import { runCycle, startWorker } from "../src/worker.js";
 import { createPositionTracker } from "../src/position-notify.js";
 
 describe("worker cycle", () => {
@@ -161,5 +161,52 @@ describe("worker cycle", () => {
     };
     await runCycle(client, { liveClose: false, discover: false, hydrate: false }, new Set());
     assert.deepEqual(seen, { discover: false, hydrate: false });
+  });
+
+  test("a failing telegram command notifies the user instead of hanging silently", async () => {
+    const sent = [];
+    let commandCallback;
+    const notifier = {
+      isEnabled: () => true,
+      send: async (msg) => {
+        sent.push(msg);
+        return { ok: true };
+      },
+      startCommandPoller: (cb) => {
+        commandCallback = cb;
+        return () => {};
+      },
+    };
+    const client = {
+      async login() {},
+      async positions() {
+        return { positions: [] };
+      },
+    };
+    const cfg = {
+      email: "a@b.com",
+      address: "0x0",
+      liveClose: false,
+      liveOpen: false,
+      pollMs: 999_999,
+      discoverEvery: 999,
+      hydrateEvery: 999,
+      telegramCmdIntervalMs: 0,
+      telegramOpenCooldownMs: 0,
+      telegramCloseCooldownMs: 0,
+    };
+    const handle = await startWorker(cfg, client, { notifier });
+    clearInterval(handle);
+
+    // Simulate the API hanging/timing out on a /refresh command.
+    client.positions = async () => {
+      throw new Error("Metina API request timed out after 45s");
+    };
+    await commandCallback({ cmd: "/refresh", args: [], raw: "/refresh" });
+
+    assert.ok(
+      sent.some((m) => m.includes("gagal") && m.includes("timed out")),
+      `expected an error notice, got: ${JSON.stringify(sent)}`,
+    );
   });
 });
