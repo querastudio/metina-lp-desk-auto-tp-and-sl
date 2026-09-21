@@ -124,6 +124,11 @@ function firstPositive(...vals) {
   return null;
 }
 
+function quoteIsStable(position) {
+  const q = String(position?.quote_symbol || position?.pnl?.quote_symbol || "").toUpperCase();
+  return /^(USDG|USDT|USDC|USD|DAI)$/.test(q);
+}
+
 function lpSidesUsd(position) {
   const pnl = position?.pnl && typeof position.pnl === "object" ? position.pnl : {};
   const meme = num(pnl.amount_meme_usd ?? position?.amount_meme_usd);
@@ -163,7 +168,8 @@ function realEntryCostUsd(position) {
     position?.initial_value_usd,
     position?.entry_value_usd,
     position?.input_value,
-    pnl.entry_value_eth,
+    quoteIsStable(position) ? pnl.entry_value_eth : null,
+    quoteIsStable(position) ? position?.entry_value_eth : null,
   );
 }
 
@@ -171,6 +177,10 @@ function entryCostUsd(position, inventory) {
   const pnl = position?.pnl && typeof position.pnl === "object" ? position.pnl : {};
   const entry = realEntryCostUsd(position);
   if (entry != null) return entry;
+  // Do not invert onchain_pnl_pct when Pro already flagged it unreliable
+  // (AU/USDG: -7.74% on-chain vs -1.43% from pnl_usd / inventory).
+  const unreliable = position?.pnl_reliable === false || pnl.pnl_reliable === false;
+  if (unreliable) return null;
   const onchain = num(pnl.onchain_pnl_pct ?? position?.onchain_pnl_pct);
   if (inventory != null && inventory > 0 && onchain != null && Math.abs(onchain) <= 500 && onchain > -99.9) {
     const cost = inventory / (1 + onchain / 100);
@@ -195,7 +205,17 @@ export function livePnlUsd(position) {
   const cost = entryCostUsd(position, inventory);
 
   if (inventory != null && cost != null && cost > 0) {
-    return inventory + fees - cost;
+    const mark = inventory + fees - cost;
+    const withoutFees = inventory - cost;
+    // current_value often already includes unclaimed. Adding fees again
+    // doubles Live % when token sides are missing (all-quote cards).
+    if (
+      fees >= 0.01
+      && Math.abs(withoutFees - fees) <= Math.max(0.5, fees * 0.25)
+    ) {
+      return withoutFees;
+    }
+    return mark;
   }
   if ((printed == null || Math.abs(printed) < 0.005) && fees >= 0.01) {
     return (printed || 0) + fees;
@@ -242,32 +262,20 @@ export function livePnlPct(position) {
   const cost = entryCostUsd(position, inventory);
   const liveUsd = livePnlUsd(position);
 
-  const reliable = pnl.pnl_reliable ?? position?.pnl_reliable;
-  if (reliable === false && realEntryCostUsd(position) == null) {
-    // Pro's own display/onchain % — and any cost inferred purely from that
-    // same % — can disagree sharply with reality for rows with no real
-    // deposit cost basis at all (seen live: API said -7.74%, the desk's own
-    // $-based math said -1.43%). Prefer the printed $ PnL vs inventory
-    // instead of trusting entryCostUsd's onchain-% fallback, which would
-    // just reproduce the same wrong number here. Rows that DO carry a real
-    // entry cost (e.g. Bid-Ask ladders) skip this and use the general,
-    // fee-aware cost-basis math below.
-    const printedUsd = num(pnl.pnl_usd ?? position?.pnl_usd);
-    if (printedUsd != null && Math.abs(printedUsd) >= 0.01 && inventory != null) {
-      const inferred = inventory - printedUsd;
-      if (inferred > 0) {
-        const cb = (printedUsd / inferred) * 100;
-        if (Number.isFinite(cb) && !mixedUnitPct(cb, printedUsd)) return cb;
-      }
-    }
-    if (display != null && !mixedUnitPct(display, liveUsd)) return display;
-    if (onchain != null && !mixedUnitPct(onchain, liveUsd)) return onchain;
-    return null;
-  }
-
   if (liveUsd != null && cost != null && cost > 0) {
     const fromMark = (liveUsd / cost) * 100;
     if (Number.isFinite(fromMark) && !mixedUnitPct(fromMark, liveUsd)) return fromMark;
+  }
+
+  // Unreliable + no real deposit: % from pnl_usd vs inventory, not the
+  // on-chain mark that often got copied into pnl_pct (AU/USDG tautology).
+  const unreliable = position?.pnl_reliable === false || pnl.pnl_reliable === false;
+  if (unreliable && liveUsd != null && Math.abs(liveUsd) >= 0.01 && inventory != null) {
+    const inferred = inventory - liveUsd;
+    if (inferred > 0) {
+      const fromInv = (liveUsd / inferred) * 100;
+      if (Number.isFinite(fromInv) && !mixedUnitPct(fromInv, liveUsd)) return fromInv;
+    }
   }
 
   if (display != null && Math.abs(display) >= 0.005 && !mixedUnitPct(display, liveUsd)) return display;
@@ -307,10 +315,6 @@ function bidAskClaimedLooksLikeLeftoverPrincipal(position, claimed, unclaimed) {
   // Real claim-lag: collected ≈ leftover unclaimed of the same harvest.
   if (unclaimed >= 0.01 && claimed <= unclaimed + Math.max(1, unclaimed * 0.25)) return false;
   const pnl = position?.pnl && typeof position.pnl === "object" ? position.pnl : {};
-  const printed = num(pnl.pnl_usd ?? position?.pnl_usd);
-  const printedAbs = printed == null ? 0 : Math.abs(printed);
-  // Harvested fees show up in printed PnL. Leftover-rung stamps do not.
-  if (printedAbs >= Math.max(1, claimed * 0.2)) return false;
   const cost = firstPositive(
     pnl.entry_value_usd,
     position?.initial_value_usd,
@@ -319,7 +323,12 @@ function bidAskClaimedLooksLikeLeftoverPrincipal(position, claimed, unclaimed) {
   );
   if (!(cost >= 1)) return false;
   const share = claimed / cost;
+  // 3:2:1 leftover rungs are ≥40% of deposit. Overlay may copy that
+  // stamp into pnl_usd — still not harvested fees.
   if (share >= 0.4) return true;
+  const printed = num(pnl.pnl_usd ?? position?.pnl_usd);
+  const printedAbs = printed == null ? 0 : Math.abs(printed);
+  if (printedAbs >= Math.max(1, claimed * 0.2)) return false;
   for (const frac of [1 / 2, 2 / 3, 5 / 6]) {
     if (Math.abs(share - frac) <= 0.03) return true;
   }
@@ -333,18 +342,21 @@ function bidAskClaimedLooksLikeLeftoverPrincipal(position, claimed, unclaimed) {
  */
 export function skipTakeProfitOnFreshFeeSpike(position) {
   if (!isBidAskPosition(position)) return false;
-  const { pnl, unclaimed, claimed } = feeBuckets(position);
+  const { unclaimed, claimed } = feeBuckets(position);
   if (!(unclaimed >= 0.01) || claimed >= 0.01) return false;
   const inventory = lpInventoryUsd(position);
   const cost = entryCostUsd(position, inventory);
   if (!(cost >= 1)) return false;
   const live = livePnlUsd(position);
   if (live == null || Math.abs(live - unclaimed) > Math.max(1, unclaimed * 0.25)) return false;
-  const printed = num(pnl.pnl_usd ?? position?.pnl_usd);
-  const printedPct = num(pnl.pnl_pct ?? position?.pnl_pct);
-  const printedFlat = (printed == null || Math.abs(printed) < 0.05)
-    && (printedPct == null || Math.abs(printedPct) < 0.05);
-  if (!printedFlat) return false;
+  // Inventory still ≈ deposit: the “profit” is only the fee print.
+  // Overlay may fold the spike into current_value, so also treat
+  // (inventory − unclaimed) ≈ cost as flat.
+  const maxDrift = Math.max(1, cost * 0.015);
+  const inventoryFlat = inventory != null && Math.abs(inventory - cost) <= maxDrift;
+  const inventoryFlatExFee = inventory != null
+    && Math.abs((inventory - unclaimed) - cost) <= maxDrift;
+  if (!inventoryFlat && !inventoryFlatExFee) return false;
   const age = positionAgeMs(position);
   const fresh = age != null && age >= 0 && age < 15 * 60_000;
   if (fresh && unclaimed > cost * 0.015) return true;
