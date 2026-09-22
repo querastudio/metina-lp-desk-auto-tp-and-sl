@@ -112,7 +112,7 @@ async function handleRefreshCommand(client, notifier, commandGate) {
   const { open, pending } = await getOpenBook(client, fullOpenFetch());
   if (pending) {
     await notifier?.send(
-      "⚠️ Data dari Metina API belum stabil (pending/stale/error) — bukan berarti posisi sudah tertutup. Coba /refresh lagi sebentar."
+      "⏳ Desk masih update posisi (pending/stale/error dari Metina) — bukan berarti posisi sudah tertutup. Coba /refresh lagi sebentar."
     );
     return;
   }

@@ -107,7 +107,7 @@ describe("handleTelegramCommand", () => {
     );
 
     assert.equal(sent.length, 2);
-    assert.match(sent[1], /belum stabil/);
+    assert.match(sent[1], /masih update/);
     assert.doesNotMatch(sent[1], /Tidak ada posisi/);
   });
 
