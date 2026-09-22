@@ -61,6 +61,36 @@ describe("handleTelegramCommand", () => {
     assert.match(sent[1], /933596/);
   });
 
+  test("/refresh reports a stale/error API fetch instead of claiming no positions", async () => {
+    const sent = [];
+    const notifier = {
+      send: async (msg) => {
+        sent.push(msg);
+        return { ok: true };
+      },
+    };
+
+    // Real case: api returns positions:[] with stale:true while the web
+    // desk still shows real open LPs — must not say "Tidak ada posisi".
+    const client = {
+      positions: async () => ({
+        ok: true,
+        stale: true,
+        positions: [],
+        errors: [],
+      }),
+    };
+
+    await handleTelegramCommand(
+      { cmd: "/refresh", args: [], raw: "/refresh" },
+      { client, notifier, tracker: null, inflight: new Set() }
+    );
+
+    assert.equal(sent.length, 2);
+    assert.match(sent[1], /belum stabil/);
+    assert.doesNotMatch(sent[1], /Tidak ada posisi/);
+  });
+
   test("/close 933596 closes specific position", async () => {
     const sent = [];
     const notifier = {

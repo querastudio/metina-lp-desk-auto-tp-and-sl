@@ -442,6 +442,35 @@ describe("PositionTracker cycle integration", () => {
     assert.equal(sentMessages.length, 0);
   });
 
+  test("an unreliable (stale/error) empty fetch never counts toward closing, even repeated", async () => {
+    const sentMessages = [];
+    const notifier = {
+      isEnabled: () => true,
+      send: async (msg) => {
+        sentMessages.push(msg);
+        return { ok: true };
+      },
+    };
+
+    const tracker = createPositionTracker();
+    const pos1 = { poolType: "uniswap", chain: "robinhood", position: "1", pair: "POS1/USDG" };
+    const pos2 = { poolType: "uniswap", chain: "robinhood", position: "2", pair: "POS2/USDG" };
+
+    await tracker.notifyCycle({ open: [pos1, pos2], discover: false, notifier });
+    assert.equal(sentMessages.length, 0);
+
+    // Metina's own stale/errors flag says this scan is incomplete — even
+    // after many empty polls in a row, never declare positions closed.
+    for (let i = 0; i < 5; i += 1) {
+      await tracker.notifyCycle({ open: [], discover: false, notifier, unreliable: true });
+    }
+    assert.equal(sentMessages.length, 0);
+
+    // Once the API is healthy again, positions are recognized normally.
+    await tracker.notifyCycle({ open: [pos1, pos2], discover: false, notifier });
+    assert.equal(sentMessages.length, 0);
+  });
+
   test("all positions gone for 2 consecutive polls is confirmed as closed", async () => {
     const sentMessages = [];
     const notifier = {

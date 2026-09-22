@@ -37,12 +37,28 @@ function openFetchOpts(arg) {
   return { discover: arg === true, hydrate: true };
 }
 
+function hasErrors(errors) {
+  if (!errors) return false;
+  if (Array.isArray(errors)) return errors.length > 0;
+  if (typeof errors === "object") return Object.keys(errors).length > 0;
+  return Boolean(errors);
+}
+
+/**
+ * Returns { positions, unreliable }. `unreliable` is true when Metina's own
+ * response flags this fetch as stale or partially failed (its `stale` /
+ * `errors` fields) — seen live: positions come back empty (api=0) while the
+ * web desk still shows real open LPs, because the indexer/RPC scan behind
+ * discover+hydrate didn't finish. Callers should not treat that as "truly
+ * zero positions".
+ */
 async function getOpenPositions(client, arg = false) {
   const { discover, hydrate } = openFetchOpts(arg);
   const data = await client.positions({ discover, hydrate });
   const rawList = Array.isArray(data?.positions) ? data.positions : [];
   const live = rawList.filter((p) => !p.closed_on_chain && !p.readonly);
   const collapsed = collapseOpenLadders(live);
+  const unreliable = Boolean(data?.stale) || hasErrors(data?.errors);
   // Full rescans are infrequent (/refresh, /open, /close, periodic rediscover)
   // — always log the raw count here so an empty result can be told apart
   // from "API genuinely returned zero" vs "our own filtering dropped rows".
@@ -52,10 +68,11 @@ async function getOpenPositions(client, arg = false) {
     log(
       `getOpenPositions(discover): api=${rawList.length} closed_on_chain=${closedCount} `
       + `readonly=${readonlyCount} live=${live.length} collapsed=${collapsed.length} hydrate=${hydrate} `
+      + `stale=${data?.stale} errors=${JSON.stringify(data?.errors) ?? "none"} `
       + `data_keys=${Object.keys(data || {}).join(",") || "none"}`,
     );
   }
-  return collapsed;
+  return { positions: collapsed, unreliable };
 }
 
 function fullOpenFetch() {
@@ -69,8 +86,14 @@ async function handleHelpCommand(notifier) {
 async function handleRefreshCommand(client, notifier, commandGate) {
   commandGate?.mark("/refresh");
   await notifier?.send("⏳ Mengambil data posisi terbaru...");
-  const open = await getOpenPositions(client, fullOpenFetch());
+  const { positions: open, unreliable } = await getOpenPositions(client, fullOpenFetch());
   if (open.length === 0) {
+    if (unreliable) {
+      await notifier?.send(
+        "⚠️ Data dari Metina API belum stabil (stale/error) — bukan berarti posisi sudah tertutup. Coba /refresh lagi sebentar."
+      );
+      return;
+    }
     await notifier?.send("📂 Tidak ada posisi open saat ini.");
     return;
   }
@@ -140,7 +163,7 @@ async function handleCloseAll(client, notifier, tracker, inflight, open) {
 }
 
 async function handleCloseProfit(client, notifier, tracker, inflight) {
-  const open = await getOpenPositions(client, fullOpenFetch());
+  const { positions: open } = await getOpenPositions(client, fullOpenFetch());
   if (open.length === 0) {
     await notifier?.send("⚠️ Tidak ada posisi open yang bisa ditutup.");
     return;
@@ -214,7 +237,7 @@ async function handleCloseCommand(parsed, { client, notifier, tracker, inflight,
     return;
   }
 
-  const open = await getOpenPositions(client, fullOpenFetch());
+  const { positions: open } = await getOpenPositions(client, fullOpenFetch());
 
   if (open.length === 0) {
     await notifier?.send("⚠️ Tidak ada posisi open yang bisa ditutup.");
@@ -343,7 +366,7 @@ async function handleOpenCommand(parsed, { client, notifier, inflight, liveOpen,
 
 export async function runCycle(client, { liveClose, discover, hydrate = true }, inflight, options = {}) {
   const { notifier, tracker } = options;
-  const open = await getOpenPositions(client, { discover: discover === true, hydrate });
+  const { positions: open, unreliable } = await getOpenPositions(client, { discover: discover === true, hydrate });
   let hits = 0;
   const dryHits = new Set();
 
@@ -421,7 +444,7 @@ export async function runCycle(client, { liveClose, discover, hydrate = true }, 
   }
 
   if (tracker) {
-    await tracker.notifyCycle({ open, discover, notifier });
+    await tracker.notifyCycle({ open, discover, notifier, unreliable });
   }
 
   return { count: open.length, hits };

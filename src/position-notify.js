@@ -422,10 +422,20 @@ export function createPositionTracker() {
         if (!activeKeys.has(key)) dryNotifiedKeys.delete(key);
       }
     },
-    async notifyCycle({ open, discover, notifier }) {
+    async notifyCycle({ open, discover, notifier, unreliable = false }) {
       if (!notifier?.isEnabled()) return;
 
       const currentOpen = Array.isArray(open) ? open : [];
+
+      // Metina flagged this fetch stale/partially failed (its own `stale` /
+      // `errors` fields) and it came back empty — that is not proof
+      // positions closed, just an incomplete scan. Skip this tick entirely
+      // so previousOpenMap and the missing-streak state are untouched, and
+      // the next poll gets a clean retry.
+      if (unreliable && currentOpen.length === 0 && previousOpenMap.size > 0) {
+        return;
+      }
+
       const currentKeys = new Set(currentOpen.map((p) => positionKey(p)));
 
       // 1. If discover tick and open positions exist -> send summary
