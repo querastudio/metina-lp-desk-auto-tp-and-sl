@@ -25,7 +25,25 @@ function mergeCookie(prev, next) {
 
 const DEFAULT_TIMEOUT_MS = 20_000;
 
-export function createClient({ metinaUrl, email, password, evmKey, address, rpcs }) {
+export function mergePositionLegs(evm, sol) {
+  const evmList = Array.isArray(evm?.positions) ? evm.positions : [];
+  const solList = Array.isArray(sol?.positions) ? sol.positions : [];
+  const evmPending = Boolean(evm?.pending) && evmList.length === 0;
+  const solPending = sol ? Boolean(sol.pending) && solList.length === 0 : false;
+  const errors = [
+    ...(Array.isArray(evm?.errors) ? evm.errors : []),
+    ...(Array.isArray(sol?.errors) ? sol.errors : []),
+  ];
+  return {
+    ok: evm?.ok !== false && (!sol || sol.ok !== false),
+    pending: evmPending && (!sol || solPending),
+    positions: [...evmList, ...solList],
+    errors,
+    wallet: evm?.wallet || sol?.wallet || undefined,
+  };
+}
+
+export function createClient({ metinaUrl, email, password, evmKey, address, solanaAddress, rpcs }) {
   let cookie = "";
 
   async function timedFetch(url, init = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
@@ -43,6 +61,7 @@ export function createClient({ metinaUrl, email, password, evmKey, address, rpcs
     const h = { Accept: "application/json" };
     if (cookie) h.Cookie = cookie;
     if (address) h["x-metina-evm-address"] = address;
+    if (solanaAddress) h["x-metina-solana-address"] = solanaAddress;
     if (rpcs && Object.keys(rpcs).length) h["x-metina-rpcs"] = JSON.stringify(rpcs);
     if (sign) h["Content-Type"] = "application/json";
     return h;
@@ -91,14 +110,26 @@ export function createClient({ metinaUrl, email, password, evmKey, address, rpcs
 
   async function positions({ discover = false, hydrate = true } = {}) {
     return withAuth(async () => {
-      const qs = new URLSearchParams();
-      qs.set("discover", discover ? "1" : "0");
-      qs.set("hydrate", hydrate ? "1" : "0");
       // discover+hydrate does a full on-chain rescan and can be slow — give it more room.
-      const res = await timedFetch(`${metinaUrl}/api/web/positions?${qs}`, {
+      const timeoutMs = discover || hydrate ? 45_000 : DEFAULT_TIMEOUT_MS;
+      // Same legs as the desk Open tab. include_solana=0 is the EVM snap the
+      // website writes; omitting it defaults to s1 and Telegram sees [].
+      const evmQs = new URLSearchParams();
+      evmQs.set("discover", discover ? "1" : "0");
+      evmQs.set("include_solana", "0");
+      evmQs.set("hydrate", hydrate ? "1" : "0");
+      const evmRes = await timedFetch(`${metinaUrl}/api/web/positions?${evmQs}`, {
         headers: headers(),
-      }, discover || hydrate ? 45_000 : DEFAULT_TIMEOUT_MS);
-      return readJson(res);
+      }, timeoutMs);
+      const evm = await readJson(evmRes);
+      if (!solanaAddress) return mergePositionLegs(evm, null);
+      const solQs = new URLSearchParams();
+      solQs.set("chain", "solana");
+      solQs.set("hydrate", hydrate ? "1" : "0");
+      const solRes = await timedFetch(`${metinaUrl}/api/web/positions?${solQs}`, {
+        headers: headers(),
+      }, timeoutMs);
+      return mergePositionLegs(evm, await readJson(solRes));
     });
   }
 

@@ -45,34 +45,57 @@ function hasErrors(errors) {
 }
 
 /**
- * Returns { positions, unreliable }. `unreliable` is true when Metina's own
- * response flags this fetch as stale or partially failed (its `stale` /
- * `errors` fields) — seen live: positions come back empty (api=0) while the
- * web desk still shows real open LPs, because the indexer/RPC scan behind
- * discover+hydrate didn't finish. Callers should not treat that as "truly
- * zero positions".
+ * True when Metina's own response flags this fetch as pending, stale, or
+ * partially failed (its `pending` / `stale` / `errors` fields) — seen live:
+ * positions come back empty (api=0) while the web desk still shows real open
+ * LPs, because the indexer/RPC scan behind discover+hydrate didn't finish.
+ * Callers should not treat that as "truly zero positions".
  */
-async function getOpenPositions(client, arg = false) {
+function isFetchUnreliable(data) {
+  return Boolean(data?.pending) || Boolean(data?.stale) || hasErrors(data?.errors);
+}
+
+function liveOpenFromDesk(data) {
+  const list = Array.isArray(data?.positions) ? data.positions : [];
+  const live = list.filter((p) => !p.closed_on_chain && !p.readonly);
+  return collapseOpenLadders(live);
+}
+
+function deskBookPendingEmpty(data, open) {
+  return isFetchUnreliable(data) && !(open?.length);
+}
+
+async function getOpenBook(client, arg = false) {
   const { discover, hydrate } = openFetchOpts(arg);
-  const data = await client.positions({ discover, hydrate });
-  const rawList = Array.isArray(data?.positions) ? data.positions : [];
-  const live = rawList.filter((p) => !p.closed_on_chain && !p.readonly);
-  const collapsed = collapseOpenLadders(live);
-  const unreliable = Boolean(data?.stale) || hasErrors(data?.errors);
+  let data = await client.positions({ discover, hydrate });
+  let open = liveOpenFromDesk(data);
+  // Desk GET can return pending [] while the snapshot worker is still writing.
+  for (let i = 0; i < 2 && deskBookPendingEmpty(data, open); i += 1) {
+    await new Promise((r) => setTimeout(r, 800));
+    data = await client.positions({ discover, hydrate });
+    open = liveOpenFromDesk(data);
+  }
+  const pending = deskBookPendingEmpty(data, open);
   // Full rescans are infrequent (/refresh, /open, /close, periodic rediscover)
   // — always log the raw count here so an empty result can be told apart
   // from "API genuinely returned zero" vs "our own filtering dropped rows".
   if (discover) {
+    const rawList = Array.isArray(data?.positions) ? data.positions : [];
     const closedCount = rawList.filter((p) => p.closed_on_chain).length;
     const readonlyCount = rawList.filter((p) => p.readonly).length;
     log(
       `getOpenPositions(discover): api=${rawList.length} closed_on_chain=${closedCount} `
-      + `readonly=${readonlyCount} live=${live.length} collapsed=${collapsed.length} hydrate=${hydrate} `
-      + `stale=${data?.stale} errors=${JSON.stringify(data?.errors) ?? "none"} `
+      + `readonly=${readonlyCount} live=${open.length} hydrate=${hydrate} `
+      + `pending=${data?.pending} stale=${data?.stale} errors=${JSON.stringify(data?.errors) ?? "none"} `
       + `data_keys=${Object.keys(data || {}).join(",") || "none"}`,
     );
   }
-  return { positions: collapsed, unreliable };
+  return { open, pending };
+}
+
+async function getOpenPositions(client, arg = false) {
+  const book = await getOpenBook(client, arg);
+  return { positions: book.open, unreliable: book.pending };
 }
 
 function fullOpenFetch() {
@@ -86,14 +109,14 @@ async function handleHelpCommand(notifier) {
 async function handleRefreshCommand(client, notifier, commandGate) {
   commandGate?.mark("/refresh");
   await notifier?.send("⏳ Mengambil data posisi terbaru...");
-  const { positions: open, unreliable } = await getOpenPositions(client, fullOpenFetch());
+  const { open, pending } = await getOpenBook(client, fullOpenFetch());
+  if (pending) {
+    await notifier?.send(
+      "⚠️ Data dari Metina API belum stabil (pending/stale/error) — bukan berarti posisi sudah tertutup. Coba /refresh lagi sebentar."
+    );
+    return;
+  }
   if (open.length === 0) {
-    if (unreliable) {
-      await notifier?.send(
-        "⚠️ Data dari Metina API belum stabil (stale/error) — bukan berarti posisi sudah tertutup. Coba /refresh lagi sebentar."
-      );
-      return;
-    }
     await notifier?.send("📂 Tidak ada posisi open saat ini.");
     return;
   }
@@ -366,7 +389,12 @@ async function handleOpenCommand(parsed, { client, notifier, inflight, liveOpen,
 
 export async function runCycle(client, { liveClose, discover, hydrate = true }, inflight, options = {}) {
   const { notifier, tracker } = options;
-  const { positions: open, unreliable } = await getOpenPositions(client, { discover: discover === true, hydrate });
+  const book = await getOpenBook(client, { discover: discover === true, hydrate });
+  if (book.pending) {
+    log("desk positions pending — skip watch tick");
+    return { count: 0, hits: 0, pending: true };
+  }
+  const open = book.open;
   let hits = 0;
   const dryHits = new Set();
 
@@ -444,7 +472,7 @@ export async function runCycle(client, { liveClose, discover, hydrate = true }, 
   }
 
   if (tracker) {
-    await tracker.notifyCycle({ open, discover, notifier, unreliable });
+    await tracker.notifyCycle({ open, discover, notifier });
   }
 
   return { count: open.length, hits };
