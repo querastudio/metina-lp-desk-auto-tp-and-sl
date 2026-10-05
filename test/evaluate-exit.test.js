@@ -259,6 +259,72 @@ describe("TP/SL rules (same as Metina Pro desk)", () => {
     assert.equal(hit.kind, "take_profit");
   });
 
+  test("NOSH: LPAgent prints fee-only +$6.60 as Live while inventory is $6.59 under cost — no fake TP", () => {
+    // Real case: Telegram closed on "Live +3.30%" but the true result was -0.12%.
+    // value 193.41 + unclaimed 6.60 - cost 200 ~= $0.
+    const nosh = {
+      poolType: "uniswap",
+      chain: "robinhood",
+      pair: "NOSH/USDG",
+      quote_symbol: "USDG",
+      discover_source: "lpagent",
+      entry_value_usd: 200,
+      take_profit_pct: 2,
+      stop_loss_pct: -20,
+      pnl: {
+        pnl_reliable: false,
+        pnl_usd: 6.6,
+        pnl_pct: 3.3,
+        onchain_pnl_pct: -3.3,
+        current_value_usd: 193.41,
+        unclaimed_fee_usd: 6.6,
+        entry_value_usd: 200,
+        quote_symbol: "USDG",
+      },
+    };
+    assert.ok(Math.abs(livePnlUsd(nosh)) < 0.5, livePnlUsd(nosh));
+    assert.ok(Math.abs(livePnlPct(nosh)) < 0.5, livePnlPct(nosh));
+    assert.equal(evaluateExit(nosh).action, null);
+  });
+
+  test("fee-only print on a small LP still cannot fake TP when inventory is underwater", () => {
+    // Gap vs the mark is under the old flat $5 floor, but it is 2% of a $100 LP.
+    const small = {
+      poolType: "uniswap",
+      chain: "robinhood",
+      discover_source: "lpagent",
+      entry_value_usd: 100,
+      take_profit_pct: 1.5,
+      pnl: {
+        pnl_reliable: false,
+        pnl_usd: 2,
+        current_value_usd: 98,
+        unclaimed_fee_usd: 2,
+        entry_value_usd: 100,
+      },
+    };
+    assert.ok(livePnlPct(small) < 1.5, livePnlPct(small));
+    assert.equal(evaluateExit(small).action, null);
+  });
+
+  test("real fee profit with flat inventory still hits TP", () => {
+    const real = {
+      poolType: "uniswap",
+      chain: "robinhood",
+      discover_source: "lpagent",
+      entry_value_usd: 200,
+      take_profit_pct: 2,
+      pnl: {
+        pnl_reliable: false,
+        pnl_usd: 6.6,
+        current_value_usd: 200,
+        unclaimed_fee_usd: 6.6,
+        entry_value_usd: 200,
+      },
+    };
+    assert.equal(evaluateExit(real).kind, "take_profit");
+  });
+
   test("watchLine prints live %", () => {
     const line = watchLine({
       pair: "HOOD10/USDG",

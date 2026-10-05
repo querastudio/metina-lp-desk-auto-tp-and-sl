@@ -269,7 +269,10 @@ function feePrintHidesOpenMark(printedUsd, feeUsd, markUsd, costUsd) {
   const fees = Number(feeUsd) > 0 ? Number(feeUsd) : 0;
   if (!Number.isFinite(printed) || !Number.isFinite(mark)) return false;
   const gap = Math.abs(mark - printed);
-  if (gap <= 5) return false;
+  // Relative to the deposit, not a flat $5: on a $200 LP a $6.59 gap is a
+  // 3% swing, exactly the size of a fake take-profit.
+  const tol = Math.max(1, (Number(costUsd) || 0) * 0.005);
+  if (gap <= tol) return false;
   const looksLikeFeePrint = fees >= 0.01
     && Math.abs(printed - fees) <= Math.max(1, fees * 0.2);
   const opposite = Math.sign(printed) !== 0 && Math.sign(mark) !== 0
@@ -277,7 +280,10 @@ function feePrintHidesOpenMark(printedUsd, feeUsd, markUsd, costUsd) {
   if (opposite && !looksLikeFeePrint) return false;
   if (opposite) return true;
   if (!looksLikeFeePrint) return false;
-  return gap > Math.max(fees, Math.abs(printed), (Number(costUsd) || 0) * 0.03);
+  // Printed ≈ fees means the indexer printed fee income only and carries no
+  // information about the inventory. If our own inventory + fees − cost mark
+  // differs materially, the mark is the truth (NOSH: printed +$6.60, mark ≈ $0).
+  return true;
 }
 
 function isSolanaDlmm(p) {
