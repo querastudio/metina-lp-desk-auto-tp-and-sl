@@ -568,6 +568,35 @@ describe("TP/SL rules (same as Metina Pro desk)", () => {
     assert.equal(evaluateExit(snow).action, null);
   });
 
+  test("EVM Bid-Ask fees covering inventory IL match LPAgent uPnL", () => {
+    const muse = {
+      poolType: "uniswap",
+      chain: "robinhood",
+      source: "lpagent",
+      discover_source: "lpagent",
+      quote_symbol: "USDG",
+      strategy: "bid_ask",
+      ladder_rungs: 3,
+      take_profit_pct: 4,
+      stop_loss_pct: -20,
+      total_value_usd: 4488.44,
+      initial_value_usd: 4500,
+      entry_value_usd: 4500,
+      pnl: {
+        quote_symbol: "USDG",
+        strategy: "bid_ask",
+        pnl_usd: -11.56,
+        indexer_pnl_usd: -11.56,
+        current_value_usd: 4488.44,
+        entry_value_usd: 4500,
+        unclaimed_fee_usd: 21.60,
+      },
+    };
+    assert.ok(livePnlUsd(muse) > 0, livePnlUsd(muse));
+    assert.ok(Math.abs(livePnlUsd(muse) - 10.04) < 0.05, livePnlUsd(muse));
+    assert.equal(evaluateExit(muse).action, null);
+  });
+
   test("EVM Bid-Ask live fee-sized plus is not indexer dust minus", () => {
     const muse = {
       poolType: "uniswap",
@@ -700,5 +729,30 @@ describe("TP/SL rules (same as Metina Pro desk)", () => {
       },
     });
     assert.equal(hit.action, null);
+  });
+
+  test("Krystal BSC Bid-Ask adds claimed fees that already left current", () => {
+    const card = {
+      poolType: "uniswap",
+      chain: "bsc",
+      source: "krystal",
+      discover_source: "krystal",
+      strategy: "bid_ask",
+      ladder_rungs: 3,
+      ladder_token_ids: ["7612838", "7612839", "7612840"],
+      total_value_usd: 3139.56,
+      entry_value_usd: 3200,
+      pnl: {
+        quote_symbol: "USDT",
+        strategy: "bid_ask",
+        pnl_usd: -60.44,
+        current_value_usd: 3139.56,
+        entry_value_usd: 3200,
+        unclaimed_fee_usd: 6.25,
+        fees_claimed_usd: 17.44,
+      },
+    };
+    const usd = livePnlUsd(card);
+    assert.ok(Math.abs(usd - (-43)) < 0.15, usd);
   });
 });

@@ -248,13 +248,19 @@ export function bidAskOpenMarkUsd({ inventory, cost, pending = 0 } = {}) {
   return inventoryAlreadyHasFees ? gap : gap + pendingUsd;
 }
 
-function bidAskLiveMarkIsLeftover(mark, pending) {
+function bidAskLiveMarkIsLeftover(mark, pending, { inventory, cost } = {}) {
   const m = Number(mark);
   const fee = Number(pending);
   const pendingUsd = Number.isFinite(fee) && fee > 0 ? fee : 0;
   if (!Number.isFinite(m) || !(m > 0)) return false;
   if (pendingUsd >= 0.01 && Math.abs(m - pendingUsd) <= Math.max(1, pendingUsd * 0.35)) {
     return false;
+  }
+  const inv = Number(inventory);
+  const c = Number(cost);
+  if (Number.isFinite(inv) && Number.isFinite(c) && c > 0) {
+    const invGap = inv - c;
+    if (!(invGap > Math.max(5, c * 0.12))) return false;
   }
   return true;
 }
@@ -315,6 +321,30 @@ export function livePnlUsd(position) {
       return withoutFees;
     }
     if (bidAsk) {
+      const chainLc = String(position?.chain || pnl.chain || "").toLowerCase();
+      const srcLc = String(position?.source || position?.discover_source || "").toLowerCase();
+      // Krystal current already includes unclaimed. Live PnL is that current
+      // minus deposit, plus fees that already left the NFT.
+      if (
+        srcLc === "krystal"
+        && (chainLc === "bsc" || chainLc === "base" || chainLc === "ethereum" || chainLc === "arc")
+      ) {
+        const cur = firstPositive(
+          pnl.current_value_usd,
+          position?.total_value_usd,
+          position?.current_value_usd,
+          inventory,
+        );
+        const sides = firstPositive(lpSidesUsd(position));
+        const { claimed, unclaimed: pendingFee } = feeBuckets(position);
+        let value = cur;
+        if (cur != null && pendingFee >= 0.01 && sides > 1) {
+          const tol = Math.max(1, pendingFee * 0.35);
+          const feesInside = Math.abs(cur - (sides + pendingFee)) <= tol;
+          if (!feesInside && Math.abs(cur - sides) <= tol) value = cur + pendingFee;
+        }
+        if (value != null && cost > 0) return value - cost + claimed;
+      }
       // Leftover 3:2:1 "claimed" is already wiped in feeBuckets.
       const pending = fees;
       const mark = bidAskOpenMarkUsd({ inventory, cost, pending });
@@ -324,7 +354,7 @@ export function livePnlUsd(position) {
         && idx != null
         && idx < 0
         && mark > 0
-        && bidAskLiveMarkIsLeftover(mark, pending)
+        && bidAskLiveMarkIsLeftover(mark, pending, { inventory, cost })
       ) return idx;
       return mark;
     }
