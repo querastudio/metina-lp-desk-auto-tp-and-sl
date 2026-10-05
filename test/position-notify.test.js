@@ -527,6 +527,24 @@ describe("PositionTracker cycle integration", () => {
     assert.equal(sentMessages.length, 0);
   });
 
+  test("claimHold detects a Claim from the fee transition and expires after the hold window", () => {
+    const tracker = createPositionTracker();
+    const mk = (unc, clm) => ({
+      poolType: "uniswap",
+      chain: "base",
+      position: "5",
+      pnl: { unclaimed_fee_usd: unc, fees_claimed_usd: clm },
+    });
+    const t0 = 1_000_000;
+    assert.equal(tracker.claimHold(mk(6, 0), t0).active, false); // first sight: no baseline
+    assert.equal(tracker.claimHold(mk(6, 0), t0 + 45_000).active, false); // nothing changed
+    const claimed = tracker.claimHold(mk(0, 6), t0 + 90_000); // claimed up, unclaimed gone
+    assert.equal(claimed.active, true);
+    assert.ok(claimed.claimedUsd >= 6);
+    assert.equal(tracker.claimHold(mk(0, 6), t0 + 90_000 + 120_000).active, true); // still held
+    assert.equal(tracker.claimHold(mk(0, 6), t0 + 90_000 + 301_000).active, false); // expired
+  });
+
   test("markDryNotified only returns true once until pruned", () => {
     const tracker = createPositionTracker();
     assert.equal(tracker.markDryNotified("uniswap-bsc-1"), true);

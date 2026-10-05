@@ -25,6 +25,11 @@ export function openFeesUsd(unclaimed, claimed) {
   const c = positiveFeeUsd(claimed);
   if (!(c >= 0.01) || !(u >= 0.01)) return u + c;
   if (c > u + Math.max(1, u * 0.25)) return u + c;
+  // A stale-unclaimed duplicate always has claimed >= the unclaimed harvest
+  // (claimed = earlier claims + that harvest). Claimed clearly below
+  // unclaimed is a separate, real amount — dropping it understates fees and
+  // can fake a stop-loss.
+  if (c < u * 0.75) return u + c;
   return Math.max(u, c);
 }
 
@@ -305,7 +310,7 @@ function isSolanaDlmm(p) {
  * indexer is IL-red — keep that minus so TP does not fire on a remint leftover.
  */
 export function livePnlUsd(position) {
-  const { pnl, fees, unclaimed } = feeBuckets(position);
+  const { pnl, fees, unclaimed, claimed: claimedFees } = feeBuckets(position);
   const printed = num(pnl.pnl_usd ?? position?.pnl_usd ?? pnl.indexer_pnl_usd);
   const inventory = lpInventoryUsd(position);
   const cost = entryCostUsd(position, inventory);
@@ -358,10 +363,16 @@ export function livePnlUsd(position) {
       ) return idx;
       return mark;
     }
-    const mark = inventory + fees - cost;
-    const printedLooksLikeFees = fees >= 0.01 && printed != null
-      && Math.abs(printed - fees) <= Math.max(1, fees * 0.2);
-    if ((preferIndexer || printedLooksLikeFees) && feePrintHidesOpenMark(printed, fees, mark, cost)) {
+    // printed == unclaimed + claimed (lifetime fee income) is also a fee-only
+    // print; in that case both buckets are distinct real amounts.
+    const rawFees = unclaimed + claimedFees;
+    const printedIsLifetimeFees = rawFees >= 0.01 && printed != null
+      && Math.abs(printed - rawFees) <= Math.max(1, rawFees * 0.2);
+    const markFees = printedIsLifetimeFees ? Math.max(fees, rawFees) : fees;
+    const mark = inventory + markFees - cost;
+    const printedLooksLikeFees = printedIsLifetimeFees || (fees >= 0.01 && printed != null
+      && Math.abs(printed - fees) <= Math.max(1, fees * 0.2));
+    if ((preferIndexer || printedLooksLikeFees) && feePrintHidesOpenMark(printed, markFees, mark, cost)) {
       if (preferIndexer && printed < 0 && mark > 0 && !printedLooksLikeFees) return printed;
       return mark;
     }

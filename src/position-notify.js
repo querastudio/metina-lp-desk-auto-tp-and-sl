@@ -399,17 +399,52 @@ export function formatCloseMessage({ position, reason, kind, tx, error, dry }) {
  *  an API hiccup (empty/degraded response), not everything closing in the
  *  same instant — require it to repeat before trusting it. */
 const ALL_VANISHED_CONFIRM_STREAK = 2;
+const JUST_CLOSED_TTL_MS = 15 * 60_000;
+
+/** After we see fees get claimed, hold Auto TP/SL this long. Indexer fee
+ *  buckets lag behind a Claim by a couple of polls (lite ticks reuse the
+ *  indexer; on-chain hydrate only every ~3 min), and in that window
+ *  unclaimed/claimed are either double counted or momentarily missing. */
+export const CLAIM_HOLD_MS = 300_000;
 
 export function createPositionTracker() {
   const previousOpenMap = new Map();
   const missingStreak = new Map();
-  const justClosedKeys = new Set();
+  const justClosedKeys = new Map();
   const dryNotifiedKeys = new Set();
+  const lastFees = new Map();
+  const claimHoldUntil = new Map();
 
   return {
     getPreviousMap: () => previousOpenMap,
+    /**
+     * Call once per position per poll. Detects a fee Claim from the
+     * transition itself (claimed went up, or unclaimed collapsed) and keeps
+     * a hold window open so a lagging indexer cannot fake TP/SL from it.
+     * Returns { active, claimedUsd } — claimedUsd is how much just left the
+     * unclaimed bucket (used to un-bias a stop-loss during the hold).
+     */
+    claimHold(position, nowMs = Date.now()) {
+      const key = positionKey(position);
+      const u = liveUnclaimedFeeUsd(position);
+      const c = liveClaimedFeeUsd(position);
+      const prev = lastFees.get(key);
+      lastFees.set(key, { u, c });
+      if (prev) {
+        const claimedUp = c > prev.c + 0.01;
+        const unclaimedDrop = prev.u >= 0.5 && u < prev.u * 0.5;
+        if (claimedUp || unclaimedDrop) {
+          const moved = Math.max(c - prev.c, prev.u - u, 0);
+          claimHoldUntil.set(key, { until: nowMs + CLAIM_HOLD_MS, claimedUsd: moved });
+        }
+      }
+      const hold = claimHoldUntil.get(key);
+      if (hold && nowMs < hold.until) return { active: true, claimedUsd: hold.claimedUsd };
+      if (hold) claimHoldUntil.delete(key);
+      return { active: false, claimedUsd: 0 };
+    },
     markWorkerClosed: (key) => {
-      justClosedKeys.add(key);
+      justClosedKeys.set(key, Date.now());
     },
     /** Returns true the first time this key is marked in a DRY streak. */
     markDryNotified: (key) => {
@@ -484,7 +519,15 @@ export function createPositionTracker() {
       for (const [key, oldPos] of stillPending) {
         previousOpenMap.set(key, oldPos);
       }
-      justClosedKeys.clear();
+      // Keep a worker-close mark until the position has actually dropped out
+      // of the open list. The worker marks mid-cycle while the position is
+      // still in that cycle's list, so clearing here would make the NEXT poll
+      // announce our own close as "Manual / external".
+      for (const [key, markedAt] of justClosedKeys) {
+        if (!currentKeys.has(key) || Date.now() - markedAt > JUST_CLOSED_TTL_MS) {
+          justClosedKeys.delete(key);
+        }
+      }
     },
   };
 }

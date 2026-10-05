@@ -1,6 +1,6 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { closePayload, evaluateExit, livePnlPct, livePnlUsd, positionKey, watchLine } from "../src/evaluate-exit.js";
+import { closePayload, evaluateExit, livePnlPct, livePnlUsd, openFeesUsd, positionKey, watchLine } from "../src/evaluate-exit.js";
 
 describe("TP/SL rules (same as Metina Pro desk)", () => {
   test("hits stop loss when on-chain PnL is reliable", () => {
@@ -323,6 +323,55 @@ describe("TP/SL rules (same as Metina Pro desk)", () => {
       },
     };
     assert.equal(evaluateExit(real).kind, "take_profit");
+  });
+
+  test("claimed fees well below unclaimed are real and are counted, not dropped as a duplicate", () => {
+    assert.equal(openFeesUsd(4, 2), 6); // separate amounts
+    assert.equal(openFeesUsd(6.6, 6.6), 6.6); // same harvest seen twice (claim lag)
+    assert.equal(openFeesUsd(8, 13), 21); // claimed far above unclaimed: separate
+    // LP 12% under water, +4 unclaimed, +2 already claimed: true -6%, not -8%.
+    const p = {
+      poolType: "uniswap",
+      chain: "base",
+      quote_symbol: "USDC",
+      entry_value_usd: 100,
+      stop_loss_pct: -7,
+      pnl: {
+        quote_symbol: "USDC",
+        entry_value_usd: 100,
+        current_value_usd: 88,
+        amount_meme_usd: 35,
+        amount_eth_usd: 53,
+        unclaimed_fee_usd: 4,
+        fees_claimed_usd: 2,
+      },
+    };
+    assert.ok(Math.abs(livePnlPct(p) + 6) < 0.1, livePnlPct(p));
+    assert.equal(evaluateExit(p).action, null);
+  });
+
+  test("fee print equal to unclaimed + claimed is a fee-only print, not real PnL", () => {
+    // printed +4 = 2 unclaimed + 2 claimed, but inventory is 12 under cost: true -8.
+    const p = {
+      poolType: "uniswap",
+      chain: "robinhood",
+      discover_source: "lpagent",
+      quote_symbol: "USDG",
+      entry_value_usd: 100,
+      take_profit_pct: 3,
+      pnl: {
+        quote_symbol: "USDG",
+        entry_value_usd: 100,
+        current_value_usd: 88,
+        amount_meme_usd: 35,
+        amount_eth_usd: 53,
+        unclaimed_fee_usd: 2,
+        fees_claimed_usd: 2,
+        pnl_usd: 4,
+      },
+    };
+    assert.ok(livePnlUsd(p) < 0, livePnlUsd(p));
+    assert.equal(evaluateExit(p).action, null);
   });
 
   test("watchLine prints live %", () => {

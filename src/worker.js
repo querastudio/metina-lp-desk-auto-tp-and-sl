@@ -387,6 +387,18 @@ async function handleOpenCommand(parsed, { client, notifier, inflight, liveOpen,
   }
 }
 
+// During a claim hold: never act on TP. For SL, only hold if adding back the
+// amount that just left the unclaimed bucket would put us above the stop.
+function shouldHoldForClaim(p, decision, hold) {
+  if (decision.kind === "take_profit") return true;
+  if (decision.kind !== "stop_loss") return false;
+  const sl = Number(p.stop_loss_pct);
+  const pct = livePnlPct(p);
+  const base = Number(p?.pnl?.current_value_usd ?? p?.total_value_usd ?? p?.current_value_usd);
+  if (!Number.isFinite(sl) || pct == null || !(base > 0)) return false;
+  return pct + (hold.claimedUsd / base) * 100 > sl;
+}
+
 export async function runCycle(client, { liveClose, discover, hydrate = true }, inflight, options = {}) {
   const { notifier, tracker } = options;
   const book = await getOpenBook(client, { discover: discover === true, hydrate });
@@ -400,8 +412,13 @@ export async function runCycle(client, { liveClose, discover, hydrate = true }, 
 
   for (const p of open) {
     log(watchLine(p));
+    const hold = tracker?.claimHold ? tracker.claimHold(p) : { active: false, claimedUsd: 0 };
     const decision = evaluateExit(p);
     if (decision.action !== "close") continue;
+    if (hold.active && shouldHoldForClaim(p, decision, hold)) {
+      log(`hold ${p.pair || p.position} ${decision.kind}: fee claim detected, waiting for indexer to settle`);
+      continue;
+    }
     hits += 1;
     const key = positionKey(p);
     const label = `${p.pair || p.position} ${decision.kind} (${decision.reason})`;

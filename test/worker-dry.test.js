@@ -184,6 +184,139 @@ describe("worker cycle", () => {
     assert.equal(sent.some((m) => /Position Closed/.test(m)), false);
   });
 
+  test("fee Claim with lagging indexer (fees counted twice) does not fire Auto TP", async () => {
+    // Real LP is +1% (inventory 88 + fees 8 + 5 claimed - 100). Right after a
+    // Claim the indexer shows the harvest in BOTH buckets, which reads as +9%.
+    const row = (unc, clm) => ({
+      poolType: "uniswap",
+      chain: "base",
+      position: "7",
+      pair: "CLAIM/USDC",
+      quote_symbol: "USDC",
+      entry_value_usd: 100,
+      take_profit_pct: 3,
+      stop_loss_pct: -20,
+      pnl_reliable: true,
+      pnl: {
+        pnl_reliable: true,
+        quote_symbol: "USDC",
+        entry_value_usd: 100,
+        current_value_usd: 88,
+        amount_meme_usd: 35,
+        amount_eth_usd: 53,
+        unclaimed_fee_usd: unc,
+        fees_claimed_usd: clm,
+      },
+    });
+    let snapshot = row(8, 5);
+    let closed = 0;
+    const client = {
+      async positions() {
+        return { positions: [snapshot] };
+      },
+      async close() {
+        closed += 1;
+        return { ok: true, success: true };
+      },
+    };
+    const tracker = createPositionTracker();
+    const inflight = new Set();
+    // before the claim: +1%, nothing to do
+    await runCycle(client, { liveClose: true, discover: false }, inflight, { tracker });
+    // claim happens, indexer lags: unclaimed stale at 8, claimed jumps 5 -> 13
+    snapshot = row(8, 13);
+    await runCycle(client, { liveClose: true, discover: false }, inflight, { tracker });
+    assert.equal(closed, 0);
+  });
+
+  test("a real take-profit with no claim in sight still closes", async () => {
+    let closed = 0;
+    const client = {
+      async positions() {
+        return {
+          positions: [{
+            poolType: "uniswap",
+            chain: "base",
+            position: "8",
+            pair: "REAL/USDC",
+            quote_symbol: "USDC",
+            entry_value_usd: 100,
+            take_profit_pct: 3,
+            pnl_reliable: true,
+            pnl: {
+              pnl_reliable: true,
+              quote_symbol: "USDC",
+              entry_value_usd: 100,
+              current_value_usd: 100,
+              amount_meme_usd: 40,
+              amount_eth_usd: 60,
+              unclaimed_fee_usd: 6,
+            },
+          }],
+        };
+      },
+      async close() {
+        closed += 1;
+        return { ok: true, success: true };
+      },
+    };
+    const tracker = createPositionTracker();
+    await runCycle(client, { liveClose: true, discover: false }, new Set(), { tracker });
+    assert.equal(closed, 1);
+  });
+
+  test("after the worker closes a position it does not also announce a Manual/external close", async () => {
+    // Real sequence (NOSH): TP close at 12:49, then a bogus "Manual / external"
+    // card at 12:51 when the position finally disappeared from the open list.
+    const sent = [];
+    const notifier = {
+      isEnabled: () => true,
+      send: async (msg) => {
+        sent.push(msg);
+        return { ok: true };
+      },
+    };
+    const pos = {
+      poolType: "uniswap",
+      chain: "base",
+      position: "9",
+      pair: "DUP/USDC",
+      quote_symbol: "USDC",
+      entry_value_usd: 100,
+      take_profit_pct: 3,
+      pnl_reliable: true,
+      pnl: {
+        pnl_reliable: true,
+        quote_symbol: "USDC",
+        entry_value_usd: 100,
+        current_value_usd: 100,
+        amount_meme_usd: 40,
+        amount_eth_usd: 60,
+        unclaimed_fee_usd: 6,
+      },
+    };
+    let open = [pos];
+    const client = {
+      async positions() {
+        return { positions: open };
+      },
+      async close() {
+        return { ok: true, success: true, tx: "0xabc" };
+      },
+    };
+    const tracker = createPositionTracker();
+    const inflight = new Set();
+    await runCycle(client, { liveClose: true, discover: false }, inflight, { notifier, tracker }); // closes
+    open = []; // next polls: the closed LP is gone
+    await runCycle(client, { liveClose: true, discover: false }, inflight, { notifier, tracker });
+    await runCycle(client, { liveClose: true, discover: false }, inflight, { notifier, tracker });
+    await runCycle(client, { liveClose: true, discover: false }, inflight, { notifier, tracker });
+    const closedCards = sent.filter((m) => m.includes("Position Closed"));
+    assert.equal(closedCards.length, 1, JSON.stringify(sent));
+    assert.match(closedCards[0], /Take Profit/);
+    assert.equal(sent.some((m) => /Manual \/ external/.test(m)), false);
+  });
+
   test("lite watch tick asks Metina for hydrate=0", async () => {
     let seen = null;
     const client = {
