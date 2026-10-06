@@ -818,4 +818,18 @@ describe("TP/SL rules (same as Metina Pro desk)", () => {
       assert.equal(evaluateExit(mk(cur)).kind ?? null, null);
     }
   });
+
+  test("ZZZ: unreliable indexer print that double counts collected fees is ignored", () => {
+    const p = {
+      poolType: "uniswap", chain: "robinhood", pair: "ZZZ/USDG", quote_symbol: "USDG",
+      discover_source: "lpagent", entry_value_usd: 50, take_profit_pct: 5, stop_loss_pct: -50,
+      pnl: {
+        pnl_reliable: false, quote_symbol: "USDG", entry_value_usd: 50, current_value_usd: 49.99,
+        amount_meme_usd: 0.71, amount_eth_usd: 49.28, unclaimed_fee_usd: 0.06, fees_claimed_usd: 1.0,
+        pnl_usd: 2.02, pnl_pct: 4.04,
+      },
+    };
+    assert.ok(Math.abs(livePnlUsd(p) - 1.05) < 0.03);
+    assert.ok(livePnlPct(p) < 2.2);
+  });
 });
