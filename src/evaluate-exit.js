@@ -154,12 +154,13 @@ function lpInventoryUsd(position) {
   // $0 Bid-Ask / LPAgent marks still have token sides — do not treat as −100% SL.
   const current = firstPositive(pnl.current_value_usd, position?.total_value_usd, position?.current_value_usd);
   const sides = lpSidesUsd(position);
-  const unclaimed = feeBuckets(position).unclaimed;
-  // Prefer token sides when current already folded in unclaimed (would double-count).
-  if (sides != null && current != null && unclaimed >= 0.01
-    && current > sides + Math.max(1, unclaimed * 0.5)
-    && Math.abs(current - (sides + unclaimed)) <= Math.max(1, unclaimed * 0.25)) {
-    return sides;
+  const { unclaimed, claimed, fees } = feeBuckets(position);
+  // Prefer token sides when current already folded in unclaimed and/or collected
+  // fees (UBIK/USDG: mark = inventory + all fees, then fees added again).
+  if (sides != null && current != null && current > sides + 0.5) {
+    const extra = current - sides;
+    const combos = [unclaimed, claimed, unclaimed + claimed, fees].filter((v) => v >= 0.01);
+    if (combos.some((f) => Math.abs(extra - f) <= Math.max(0.5, f * 0.15))) return sides;
   }
   if (current != null) return current;
   return sides;

@@ -804,4 +804,18 @@ describe("TP/SL rules (same as Metina Pro desk)", () => {
     const usd = livePnlUsd(card);
     assert.ok(Math.abs(usd - (-43)) < 0.15, usd);
   });
+  test("UBIK: mark that already folds collected fees is not counted twice", () => {
+    const mk = (cur) => ({
+      poolType: "uniswap", chain: "robinhood", pair: "UBIK/USDG", quote_symbol: "USDG",
+      discover_source: "lpagent", entry_value_usd: 200, take_profit_pct: 3, stop_loss_pct: -20,
+      pnl: {
+        pnl_reliable: false, quote_symbol: "USDG", entry_value_usd: 200, current_value_usd: cur,
+        amount_meme_usd: 97.65, amount_eth_usd: 100, unclaimed_fee_usd: 0.18, fees_claimed_usd: 2.87,
+      },
+    });
+    for (const cur of [200.7, 200.52, 197.65]) {
+      assert.ok(Math.abs(livePnlUsd(mk(cur)) - 0.7) < 0.02, `cur=${cur}`);
+      assert.equal(evaluateExit(mk(cur)).kind ?? null, null);
+    }
+  });
 });
