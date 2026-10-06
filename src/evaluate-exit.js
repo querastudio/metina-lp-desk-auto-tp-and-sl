@@ -377,6 +377,14 @@ export function livePnlUsd(position) {
       if (preferIndexer && printed < 0 && mark > 0 && !printedLooksLikeFees) return printed;
       return mark;
     }
+    // Unreliable indexer print that sits above our own mark by roughly the
+    // collected fees: the harvest was counted twice (ZZZ/USDG: print +4.04%,
+    // inventory + fees really +1.98%). Trust the mark.
+    const unreliableRow = position?.pnl_reliable === false || pnl.pnl_reliable === false;
+    if (unreliableRow && printed != null && claimedFees >= 0.01 && printed > mark
+      && Math.abs(printed - mark - claimedFees) <= Math.max(0.5, claimedFees * 0.35)) {
+      return mark;
+    }
     if (preferIndexer && printed != null) return printed;
     return mark;
   }
