@@ -1,4 +1,4 @@
-import { closePayload, evaluateExit, livePnlPct, livePnlUsd, positionKey, watchLine } from "./evaluate-exit.js";
+import { closePayload, evaluateExit, livePnlPct, livePnlUsd, pnlDebugLine, positionKey, watchLine } from "./evaluate-exit.js";
 import {
   createPositionTracker,
   formatCloseMessage,
@@ -25,6 +25,25 @@ function now() {
 
 function log(msg) {
   console.log(`[${now()}] ${msg}`);
+}
+
+const debugLogged = new Map();
+const DEBUG_LOG_EVERY_MS = 120_000;
+
+function logPnlDebug(p) {
+  try {
+    const key = positionKey(p);
+    const line = pnlDebugLine(p);
+    // log when the raw inputs change (claim, fee tick) or every 2 minutes
+    const sig = line.replace(/ live_(usd|pct)=\S+/g, "");
+    const prev = debugLogged.get(key);
+    const nowMs = Date.now();
+    if (prev && prev.sig === sig && nowMs - prev.at < DEBUG_LOG_EVERY_MS) return;
+    debugLogged.set(key, { sig, at: nowMs });
+    log(line);
+  } catch {
+    /* diagnostics must never break the watch loop */
+  }
 }
 
 function openFetchOpts(arg) {
@@ -412,6 +431,7 @@ export async function runCycle(client, { liveClose, discover, hydrate = true }, 
 
   for (const p of open) {
     log(watchLine(p));
+    logPnlDebug(p);
     const hold = tracker?.claimHold ? tracker.claimHold(p) : { active: false, claimedUsd: 0 };
     const decision = evaluateExit(p);
     if (decision.action !== "close") continue;

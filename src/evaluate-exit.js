@@ -625,6 +625,34 @@ export function watchLine(position) {
   return `${position?.pair || position?.position}${slLabel}${tpLabel} live=${liveLabel} onchain=${onchainLabel}${reliabilityLabel(position)} ${state}`;
 }
 
+/** Raw PnL inputs next to our result, for copy-pasting from Railway logs into a bug report. Diagnostic only. */
+export function pnlDebugLine(position) {
+  const pnl = position?.pnl && typeof position.pnl === "object" ? position.pnl : {};
+  const f = (v) => {
+    const n = num(v);
+    return n == null ? "-" : String(Math.round(n * 10000) / 10000);
+  };
+  const { unclaimed, claimed, fees } = feeBuckets(position);
+  const raw = {
+    api_current: pnl.current_value_usd ?? position?.total_value_usd ?? position?.current_value_usd,
+    api_meme: pnl.amount_meme_usd ?? position?.amount_meme_usd,
+    api_quote: pnl.amount_eth_usd ?? pnl.amount_sol_usd ?? position?.amount_eth_usd ?? position?.amount_sol_usd,
+    api_unclaimed: pnl.unclaimed_fee_usd ?? position?.unclaimed_fees_usd,
+    api_claimed: pnl.fees_claimed_usd ?? position?.fees_claimed_usd,
+    api_entry: pnl.entry_value_usd ?? position?.entry_value_usd,
+    api_pnl_usd: pnl.pnl_usd ?? position?.pnl_usd,
+    api_pnl_pct: pnl.pnl_pct ?? position?.pnl_pct,
+    api_onchain_pct: pnl.onchain_pnl_pct ?? position?.onchain_pnl_pct,
+  };
+  const inv = lpInventoryUsd(position);
+  const cost = entryCostUsd(position, inv);
+  const parts = Object.entries(raw).map(([k, v]) => `${k}=${f(v)}`);
+  parts.push(`inv=${f(inv)}`, `cost=${f(cost)}`, `fees=${f(fees)}(u${f(unclaimed)}+c${f(claimed)})`);
+  parts.push(`live_usd=${f(livePnlUsd(position))}`, `live_pct=${f(livePnlPct(position))}`);
+  parts.push(`reliable=${pnl.pnl_reliable ?? position?.pnl_reliable ?? "-"}`, `src=${position?.discover_source || position?.source || "-"}`);
+  return `[pnl-debug] ${position?.pair || position?.position} id=${position?.position || position?.tokenId || "-"} ${parts.join(" ")}`;
+}
+
 export function closePayload(p, extra = {}) {
   const ids = Array.isArray(p.ladder_token_ids)
     ? p.ladder_token_ids.map((id) => String(id)).filter(Boolean)
