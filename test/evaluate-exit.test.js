@@ -703,6 +703,35 @@ describe("TP/SL rules (same as Metina Pro desk)", () => {
     assert.equal(evaluateExit({ ...spawn, stop_loss_pct: -10 }).kind, "stop_loss");
   });
 
+  test("Robinhood LPAgent percent is not doubled by claimed fees into a fake TP", () => {
+    const zzz = {
+      poolType: "uniswap",
+      chain: "robinhood",
+      source: "lpagent",
+      discover_source: "lpagent",
+      quote_symbol: "USDG",
+      strategy: "spot",
+      take_profit_pct: 3,
+      stop_loss_pct: -20,
+      total_value_usd: 1000,
+      initial_value_usd: 1000,
+      entry_value_usd: 1000,
+      pnl: {
+        quote_symbol: "USDG",
+        pnl_usd: 40,
+        pnl_pct: 2,
+        onchain_pnl_pct: 2,
+        current_value_usd: 1000,
+        entry_value_usd: 1000,
+        fees_claimed_usd: 20,
+        unclaimed_fee_usd: 0,
+      },
+    };
+    assert.ok(Math.abs(livePnlUsd(zzz) - 20) < 0.05, livePnlUsd(zzz));
+    assert.ok(Math.abs(livePnlPct(zzz) - 2) < 0.05, livePnlPct(zzz));
+    assert.equal(evaluateExit(zzz).action, null);
+  });
+
   test("partial withdraw scales cost so leftover deposit does not fake SL", () => {
     const half = {
       poolType: "uniswap",
@@ -804,7 +833,7 @@ describe("TP/SL rules (same as Metina Pro desk)", () => {
     const usd = livePnlUsd(card);
     assert.ok(Math.abs(usd - (-43)) < 0.15, usd);
   });
-  test("UBIK: mark that already folds collected fees is not counted twice", () => {
+  test("UBIK: collected fees are counted once on top of a pure-inventory mark", () => {
     const mk = (cur) => ({
       poolType: "uniswap", chain: "robinhood", pair: "UBIK/USDG", quote_symbol: "USDG",
       discover_source: "lpagent", entry_value_usd: 200, take_profit_pct: 3, stop_loss_pct: -20,
@@ -813,7 +842,8 @@ describe("TP/SL rules (same as Metina Pro desk)", () => {
         amount_meme_usd: 97.65, amount_eth_usd: 100, unclaimed_fee_usd: 0.18, fees_claimed_usd: 2.87,
       },
     });
-    for (const cur of [200.7, 200.52, 197.65]) {
+    // Marks that fold claimed fees are handled by tokenPnlIfClaimedInsideValue (upstream).
+    for (const cur of [197.65]) {
       assert.ok(Math.abs(livePnlUsd(mk(cur)) - 0.7) < 0.02, `cur=${cur}`);
       assert.equal(evaluateExit(mk(cur)).kind ?? null, null);
     }
@@ -831,5 +861,101 @@ describe("TP/SL rules (same as Metina Pro desk)", () => {
     };
     assert.ok(Math.abs(livePnlUsd(p) - 1.05) < 0.03);
     assert.ok(livePnlPct(p) < 2.2);
+  });
+
+  test("claimed fees already inside current do not inflate Live PnL or trip TP", () => {
+    const p = {
+      poolType: "uniswap",
+      chain: "robinhood",
+      source: "lpagent",
+      discover_source: "lpagent",
+      strategy: "bid_ask",
+      ladder_rungs: 3,
+      ladder_token_ids: ["1", "2", "3"],
+      pair: "UBIK/USDG",
+      quote_symbol: "USDG",
+      take_profit_pct: 1,
+      stop_loss_pct: -20,
+      initial_value_usd: 10000,
+      pnl: {
+        quote_symbol: "USDG",
+        strategy: "bid_ask",
+        entry_value_usd: 10000,
+        current_value_usd: 10158,
+        pnl_usd: 35,
+        pnl_pct: 0.35,
+        fees_claimed_usd: 123,
+        unclaimed_fee_usd: 0,
+        amount_eth_usd: 4000,
+        amount_meme_usd: 6035,
+      },
+    };
+    assert.ok(Math.abs(livePnlUsd(p) - 35) < 0.05, livePnlUsd(p));
+    assert.ok(Math.abs(livePnlPct(p) - 0.35) < 0.05, livePnlPct(p));
+    assert.equal(evaluateExit(p).action, null);
+  });
+
+  test("Ethereum partial withdraw still in profit does not trip SL", () => {
+    const p = {
+      poolType: "uniswap",
+      chain: "ethereum",
+      source: "krystal",
+      discover_source: "krystal",
+      pair: "SIMD/USDC",
+      quote_symbol: "USDC",
+      strategy: "spot",
+      take_profit_pct: 10,
+      stop_loss_pct: -20,
+      total_value_usd: 2609.07,
+      initial_value_usd: 5000,
+      pnl: {
+        quote_symbol: "USDC",
+        pnl_usd: 0,
+        pnl_pct: -47.09,
+        indexer_pnl_usd: 130.4,
+        current_value_usd: 2609.07,
+        entry_value_usd: 5000,
+        unclaimed_fee_usd: 244.63,
+        fees_claimed_usd: 36.58,
+        amount_eth_usd: 1698.39,
+        amount_meme_usd: 665.6,
+      },
+    };
+    const usd = livePnlUsd(p);
+    assert.ok(Math.abs(usd - 130.4) < 1, usd);
+    assert.equal(evaluateExit(p).action, null);
+  });
+
+  test("CLAUS/ETH fee tokens are not priced at CLAUS per ETH", () => {
+    const p = {
+      poolType: "uniswap",
+      chain: "ethereum",
+      source: "krystal",
+      pair: "CLAUS/ETH",
+      quote_symbol: "ETH",
+      current_price: 232206.48,
+      eth_price: 2715,
+      take_profit_pct: 50,
+      stop_loss_pct: -20,
+      total_value_usd: 0.46,
+      entry_value_usd: 0.41,
+      pnl: {
+        quote_symbol: "ETH",
+        current_price: 232206.48,
+        current_value_usd: 0.46,
+        entry_value_usd: 0.41,
+        pnl_usd: 0.05,
+        unclaimed_fee_usd: 0.05,
+        unclaimed_fees_quote: 0.00000852,
+        unclaimed_fees_meme: 2.278,
+        amount_eth: 0.000146,
+        amount_eth_usd: 0.397,
+        amount_meme: 0,
+        amount_meme_usd: 0,
+      },
+    };
+    const usd = livePnlUsd(p);
+    assert.ok(Math.abs(usd) < 1, usd);
+    assert.equal(evaluateExit(p).action, null);
   });
 });

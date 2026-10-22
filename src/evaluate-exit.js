@@ -43,6 +43,19 @@ function quoteLooksLikeUnclaimedUsd(usd, quoteAmt) {
   return Math.abs(idx - q) <= Math.max(0.25, Math.abs(q) * 0.12);
 }
 
+function impliedNativeQuotePrice(position) {
+  const pnl = position?.pnl && typeof position.pnl === "object" ? position.pnl : {};
+  const amt = num(pnl.amount_eth ?? position?.amount_eth);
+  const usd = num(pnl.amount_eth_usd ?? position?.amount_eth_usd ?? position?.amount_quote_usd);
+  if (amt != null && amt > 0 && usd != null && usd > 0) {
+    const px = usd / amt;
+    if (px > 2 && px < 1_000_000) return px;
+  }
+  const direct = num(position?.eth_price ?? pnl.eth_price ?? position?.bnb_price ?? pnl.bnb_price);
+  if (direct != null && direct > 2 && direct < 1_000_000) return direct;
+  return null;
+}
+
 function impliedMemePrice(position) {
   const pnl = position?.pnl && typeof position.pnl === "object" ? position.pnl : {};
   const amt = num(pnl.amount_meme ?? position?.amount_meme);
@@ -69,7 +82,13 @@ function unclaimedUsdFromFeeLegs(position) {
   const m = num(pnl.unclaimed_fees_meme ?? position?.unclaimed_fees_meme);
   const quote = String(pnl.quote_symbol || position?.quote_symbol || "").toUpperCase();
   const stable = /^(USDG|USDT|USDC|USD|DAI)$/.test(quote);
-  const px = impliedMemePrice(position);
+  let px = impliedMemePrice(position);
+  const nativeQuoted = /^(ETH|WETH|BNB|WBNB)$/.test(quote);
+  if (nativeQuoted && px != null && px > 0) {
+    const np = impliedNativeQuotePrice(position);
+    // Pool NOW is often meme tokens per 1 ETH (CLAUS ~232k), not USD.
+    if (np > 2 && px > np * 20) px = np / px;
+  }
   let fromTokens = 0;
   if (stable && q != null && q > 0) fromTokens += q;
   if (m != null && m > 0 && px != null && px > 0) fromTokens += m * px;
@@ -90,6 +109,21 @@ function unclaimedUsdFromFeeLegs(position) {
     return stored;
   }
   return fromTokens > 0.005 ? fromTokens : 0;
+}
+
+/** Source percent is the PnL. A dollar that is that percent plus claimed counted the harvest twice. */
+function sourcePnlWithoutDoubleClaimed(printedUsd, pct, costUsd, claimedUsd) {
+  const printed = num(printedUsd);
+  const percent = num(pct);
+  const cost = num(costUsd);
+  const claimed = num(claimedUsd);
+  if (printed == null || percent == null || !(cost > 0) || !(claimed >= 0.5)) return null;
+  const fromPct = cost * (percent / 100);
+  if (Math.sign(printed) !== 0 && Math.sign(fromPct) !== 0 && Math.sign(printed) !== Math.sign(fromPct)) return null;
+  const tol = Math.max(0.25, Math.min(claimed * 0.12, cost * 0.002));
+  if (Math.abs(printed - fromPct) <= tol) return null;
+  if (Math.abs(printed - (fromPct + claimed)) <= tol) return fromPct;
+  return null;
 }
 
 function feeBuckets(position) {
@@ -241,6 +275,51 @@ function shouldPreferLpagentOpenPnl(p) {
   return pool === "dlmm";
 }
 
+/**
+ * current − cost is larger than the token / LPAgent mark by about the claimed
+ * fees, so those fees are already inside the API value. Do not add them again.
+ * Same rule as Metina Pro tokenPnlIfClaimedInsideValue.
+ */
+export function tokenPnlIfClaimedInsideValue({
+  current,
+  sides,
+  cost,
+  printed,
+  unclaimed = 0,
+  claimed = 0,
+} = {}) {
+  const cur = Number(current);
+  const basis = Number(cost);
+  const c = Number(claimed);
+  const u = Number(unclaimed) > 0 ? Number(unclaimed) : 0;
+  if (!(cur > 1) || !(basis > 0) || !(c >= 1)) return null;
+  const rawGap = cur - basis;
+  const print = Number(printed);
+  const side = Number(sides);
+  const sidesMatchCurrent = Number.isFinite(side) && side > 1
+    && Math.abs(side - cur) <= Math.max(1, cur * 0.002);
+  const bases = [];
+  if (Number.isFinite(side) && side > 1 && !sidesMatchCurrent) bases.push(side - basis);
+  if (Number.isFinite(print) && Math.abs(print) >= 0.01) bases.push(print);
+  const fees = [c];
+  if (u >= 1) fees.push(c + u);
+  const combined = openFeesUsd(u, c);
+  if (combined > c + 0.01) fees.push(combined);
+  for (const base of bases) {
+    if (Math.abs(base - c) <= Math.max(1, c * 0.2)) continue;
+    const legGap = rawGap - base;
+    // A pending-fee gap must not be read as claimed (제로/USDT $12.75 vs $18.55).
+    if (u >= 1 && Math.abs(legGap - u) <= Math.abs(legGap - c)) continue;
+    for (const fee of fees) {
+      if (!(fee >= 1)) continue;
+      if (Math.abs(legGap - fee) > Math.max(1, fee * 0.15)) continue;
+      const tokenBase = Number.isFinite(side) && side > 1 && !sidesMatchCurrent ? side - basis : base;
+      return tokenBase + u;
+    }
+  }
+  return null;
+}
+
 /** Live EVM Bid-Ask: inventory + unclaimed − cost, without adding fees twice. */
 export function bidAskOpenMarkUsd({ inventory, cost, pending = 0 } = {}) {
   const inv = Number(inventory);
@@ -311,12 +390,25 @@ function isSolanaDlmm(p) {
  * indexer is IL-red — keep that minus so TP does not fire on a remint leftover.
  */
 export function livePnlUsd(position) {
-  const { pnl, fees, unclaimed, claimed: claimedFees } = feeBuckets(position);
+  const { pnl, fees, unclaimed, claimed } = feeBuckets(position);
   const printed = num(pnl.pnl_usd ?? position?.pnl_usd ?? pnl.indexer_pnl_usd);
   const inventory = lpInventoryUsd(position);
   const cost = entryCostUsd(position, inventory);
   const preferIndexer = shouldPreferLpagentOpenPnl(position);
   const bidAsk = isBidAskPosition(position) && !isSolanaDlmm(position);
+  const currentRaw = firstPositive(pnl.current_value_usd, position?.total_value_usd, position?.current_value_usd);
+
+  if (currentRaw != null && cost != null && cost > 0 && !isSolanaDlmm(position)) {
+    const tokenMark = tokenPnlIfClaimedInsideValue({
+      current: currentRaw,
+      sides: lpSidesUsd(position),
+      cost,
+      printed,
+      unclaimed,
+      claimed,
+    });
+    if (tokenMark != null) return tokenMark;
+  }
 
   if (inventory != null && cost != null && cost > 0) {
     const withoutFees = inventory - cost;
@@ -362,11 +454,14 @@ export function livePnlUsd(position) {
         && mark > 0
         && bidAskLiveMarkIsLeftover(mark, pending, { inventory, cost })
       ) return idx;
+      const srcPct = num(pnl.pnl_pct ?? position?.pnl_pct ?? pnl.onchain_pnl_pct);
+      const snapped = sourcePnlWithoutDoubleClaimed(mark, srcPct, cost, claimed);
+      if (preferIndexer && snapped != null) return snapped;
       return mark;
     }
     // printed == unclaimed + claimed (lifetime fee income) is also a fee-only
     // print; in that case both buckets are distinct real amounts.
-    const rawFees = unclaimed + claimedFees;
+    const rawFees = unclaimed + claimed;
     const printedIsLifetimeFees = rawFees >= 0.01 && printed != null
       && Math.abs(printed - rawFees) <= Math.max(1, rawFees * 0.2);
     const markFees = printedIsLifetimeFees ? Math.max(fees, rawFees) : fees;
@@ -381,11 +476,29 @@ export function livePnlUsd(position) {
     // collected fees: the harvest was counted twice (ZZZ/USDG: print +4.04%,
     // inventory + fees really +1.98%). Trust the mark.
     const unreliableRow = position?.pnl_reliable === false || pnl.pnl_reliable === false;
-    if (unreliableRow && printed != null && claimedFees >= 0.01 && printed > mark
-      && Math.abs(printed - mark - claimedFees) <= Math.max(0.5, claimedFees * 0.35)) {
+    if (unreliableRow && printed != null && claimed >= 0.01 && printed > mark
+      && Math.abs(printed - mark - claimed) <= Math.max(0.5, claimed * 0.35)) {
       return mark;
     }
-    if (preferIndexer && printed != null) return printed;
+    if (preferIndexer && printed != null) {
+      const srcPct = num(pnl.pnl_pct ?? position?.pnl_pct ?? pnl.onchain_pnl_pct);
+      const snapped = sourcePnlWithoutDoubleClaimed(printed, srcPct, cost, claimed);
+      return snapped != null ? snapped : printed;
+    }
+    const krPartial = num(pnl.indexer_pnl_usd);
+    const srcLc = String(position?.source || position?.discover_source || "").toLowerCase();
+    const chainLc = String(position?.chain || pnl.chain || "").toLowerCase();
+    const krystalEvm = srcLc === "krystal"
+      && (chainLc === "bsc" || chainLc === "base" || chainLc === "ethereum" || chainLc === "arc");
+    if (krystalEvm && krPartial != null && cost > 0) {
+      const gap = krPartial - mark;
+      const pad = Math.max(fees, 0.01);
+      // Partial withdraw: Krystal is vs capital still in the LP. The full
+      // deposit makes a profit look like a large loss (SIMD/USDC +$130).
+      if (Math.abs(krPartial) >= 0.5 && gap > Math.max(20, pad * 1.5) && Math.abs(krPartial) <= cost * 5) {
+        return krPartial;
+      }
+    }
     return mark;
   }
   if ((printed == null || Math.abs(printed) < 0.005) && fees >= 0.01) {
